@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 )
 
 type emailListResponse struct {
@@ -21,15 +22,16 @@ type emailListResponse struct {
 }
 
 type emilItem struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	Desc      string `json:"desc"`
-	Datetime  string `json:"datetime"`
-	IsRead    bool   `json:"is_read"`
-	Sender    User   `json:"sender"`
-	To        []User `json:"to"`
-	Dangerous bool   `json:"dangerous"`
-	Error     string `json:"error"`
+	ID         int    `json:"id"`
+	Title      string `json:"title"`
+	Desc       string `json:"desc"`
+	Datetime   string `json:"datetime"`
+	IsRead     bool   `json:"is_read"`
+	Sender     User   `json:"sender"`
+	To         []User `json:"to"`
+	Recipients []User `json:"recipients"`
+	Dangerous  bool   `json:"dangerous"`
+	Error      string `json:"error"`
 }
 
 type User struct {
@@ -39,6 +41,7 @@ type User struct {
 
 type emailRequest struct {
 	Keyword     string `json:"keyword"`
+	SearchField string `json:"search_field"`
 	Tag         string `json:"tag"`
 	CurrentPage int    `json:"current_page"`
 	PageSize    int    `json:"page_size"`
@@ -72,7 +75,7 @@ func EmailList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	}
 	_ = json.Unmarshal([]byte(retData.Tag), &tagInfo)
 
-	emailList, total := list.GetEmailList(ctx, tagInfo, retData.Keyword, false, offset, retData.PageSize)
+	emailList, total := list.SearchEmailList(ctx, tagInfo, retData.Keyword, retData.SearchField, false, offset, retData.PageSize)
 
 	for _, email := range emailList {
 		var sender User
@@ -85,18 +88,20 @@ func EmailList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 
 		var tos []User
 		_ = json.Unmarshal([]byte(email.To), &tos)
+		recipients := collectRecipients(email.To, email.Cc, email.Bcc)
 		authentication := parsemail.NewEmailAuthentication(email.SPFCheck == 1, email.DKIMCheck == 1)
 
 		lst = append(lst, &emilItem{
-			ID:        email.Id,
-			Title:     email.Subject,
-			Desc:      email.Text.String,
-			Datetime:  email.SendDate.Format("2006-01-02 15:04:05"),
-			IsRead:    email.IsRead == 1,
-			Sender:    sender,
-			To:        tos,
-			Dangerous: authentication.Dangerous,
-			Error:     email.Error.String,
+			ID:         email.Id,
+			Title:      email.Subject,
+			Desc:       email.Text.String,
+			Datetime:   email.SendDate.Format("2006-01-02 15:04:05"),
+			IsRead:     email.IsRead == 1,
+			Sender:     sender,
+			To:         tos,
+			Recipients: recipients,
+			Dangerous:  authentication.Dangerous,
+			Error:      email.Error.String,
 		})
 	}
 
@@ -106,4 +111,31 @@ func EmailList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		List:        lst,
 	}
 	response.NewSuccessResponse(ret).FPrint(w)
+}
+
+func collectRecipients(values ...string) []User {
+	var recipients []User
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		var users []User
+		if err := json.Unmarshal([]byte(value), &users); err != nil {
+			continue
+		}
+		for _, user := range users {
+			address := strings.TrimSpace(user.EmailAddress)
+			key := strings.ToLower(address)
+			if key == "" {
+				key = "name:" + strings.ToLower(strings.TrimSpace(user.Name))
+			}
+			if key == "name:" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			recipients = append(recipients, user)
+		}
+	}
+	return recipients
 }

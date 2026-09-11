@@ -27,12 +27,18 @@
             <div class="receivers-line">
               <span class="meta-label">{{ lang.to }}:</span>
               <span v-for="(to, index) in tos" :key="index" class="receiver-chip">
-                {{ to.Name !== '' ? to.Name : to.EmailAddress }}<span v-if="index < tos.length - 1">, </span>
+                {{ formatRecipient(to) }}<span v-if="index < tos.length - 1">, </span>
               </span>
               <span v-if="showCC" class="cc-section">
                 <span class="meta-label">{{ lang.cc }}:</span>
                 <span v-for="(item, index) in ccs" :key="'cc'+index" class="receiver-chip">
-                  {{ item.Name !== '' ? item.Name : item.EmailAddress }}<span v-if="index < ccs.length - 1">, </span>
+                  {{ formatRecipient(item) }}<span v-if="index < ccs.length - 1">, </span>
+                </span>
+              </span>
+              <span v-if="showBCC" class="cc-section">
+                <span class="meta-label">{{ lang.bcc }}:</span>
+                <span v-for="(item, index) in bccs" :key="'bcc'+index" class="receiver-chip">
+                  {{ formatRecipient(item) }}<span v-if="index < bccs.length - 1">, </span>
                 </span>
               </span>
             </div>
@@ -75,6 +81,7 @@ import {ElMessage, ElMessageBox} from 'element-plus';
 import lang from '../i18n/i18n';
 import {http} from "@/utils/axios";
 import useGroupStore from '../stores/group';
+import {formatRecipient} from "@/utils/email";
 
 const route = useRoute()
 const router = useRouter()
@@ -85,19 +92,29 @@ const detailData = ref({
 
 const tos = ref([])
 const ccs = ref([])
+const bccs = ref([])
 const showCC = ref(false)
+const showBCC = ref(false)
+
+const parseRecipients = (value) => {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
 
 http.post("/api/email/detail", {id: parseInt(route.params.id)}).then(res => {
   detailData.value = res.data || {}
   detailData.value.attachments = res.data.attachments || [];
-  
-  if (res.data.to && res.data.to !== "") {
-    try { tos.value = JSON.parse(res.data.to) } catch(e){}
-  }
-  if (res.data.cc && res.data.cc !== "") {
-    try { ccs.value = JSON.parse(res.data.cc) } catch(e){}
-  }
+
+  tos.value = parseRecipients(res.data.to)
+  ccs.value = parseRecipients(res.data.cc)
+  bccs.value = parseRecipients(res.data.bcc)
   showCC.value = ccs.value && ccs.value.length > 0
+  showBCC.value = bccs.value && bccs.value.length > 0
 })
 
 const getInitial = (name) => {

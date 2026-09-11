@@ -1,5 +1,8 @@
 <template>
   <div class="login-wrapper">
+    <div class="login-language">
+      <LanguageSelector/>
+    </div>
     <div class="login-container">
       <div class="login-left">
         <div class="brand-info">
@@ -49,6 +52,7 @@ import {router} from "@/router";
 import lang from '../i18n/i18n';
 import {http} from "@/utils/axios";
 import {useGlobalStatusStore} from "@/stores/useGlobalStatusStore";
+import LanguageSelector from "@/components/LanguageSelector.vue";
 
 const globalStatus = useGlobalStatusStore();
 const loading = ref(false);
@@ -95,6 +99,13 @@ const onSubmit = () => {
   justify-content: center;
   align-items: center;
   padding: 24px;
+}
+
+.login-language {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 2;
 }
 
 .login-container {

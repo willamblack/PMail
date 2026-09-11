@@ -72,6 +72,9 @@
                   {{ scope.row.sender.Name !== '' ? scope.row.sender.Name : scope.row.sender.EmailAddress }}
                 </div>
                 <div class="mail-subject">{{ scope.row.title }}</div>
+                <div class="mail-recipient" v-if="scope.row.recipients && scope.row.recipients.length > 0">
+                  {{ lang.to }}: {{ formatRecipientList(scope.row.recipients) }}
+                </div>
                 <div class="mail-snippet">{{ scope.row.desc }}</div>
               </div>
               <div class="mail-meta">
@@ -88,6 +91,7 @@
           background
           layout="prev, pager, next"
           :page-count="totalPage"
+          v-model:current-page="currentPage"
           @current-change="pageChange"
       />
     </div>
@@ -98,41 +102,54 @@
 import {EpArrowDownBold} from "vue-icons-plus/ep";
 import {Delete, View, Folder, EditPen, Warning, CircleCheck, Switch} from "@element-plus/icons-vue";
 import {useRouter} from 'vue-router'
-import {ref, watch} from 'vue'
+import {onUnmounted, ref, watch} from 'vue'
 import useGroupStore from '../stores/group'
 import lang from '../i18n/i18n';
 import {http} from "@/utils/axios";
 import {ElMessage, ElMessageBox} from "element-plus";
+import {formatRecipientList} from "@/utils/email";
 
 const router = useRouter();
 const groupStore = useGroupStore()
 const groupList = ref([])
 const taskTableDataRef = ref(null)
 const selectedRows = ref([])
-let tag = groupStore.tag;
-
-if (tag === "") {
-  tag = '{"type":0,"status":-1}'
-}
-
-watch(groupStore, async (newV) => {
-  tag = newV.tag;
-  if (tag === "") {
-    tag = '{"type":0,"status":-1}'
-  }
-  data.value = []
-  updateList()
-})
-
 const data = ref([])
 const totalPage = ref(0)
+const currentPage = ref(1)
+let listRequestID = 0
+let searchTimer
 
-const updateList = function () {
-  http.post("/api/email/list", {tag: tag, page_size: 15}).then(res => {
+const currentTag = () => groupStore.tag || '{"type":0,"status":-1}'
+
+const updateList = function (page = currentPage.value) {
+  const requestID = ++listRequestID
+  http.post("/api/email/list", {
+    tag: currentTag(),
+    page_size: 15,
+    current_page: page,
+    keyword: groupStore.searchKeyword.trim(),
+    search_field: groupStore.searchField,
+  }).then(res => {
+    if (requestID !== listRequestID) return
     data.value = res.data.list || []
     totalPage.value = res.data.total_page || 0
   })
 }
+
+watch(() => groupStore.tag, () => {
+  currentPage.value = 1
+  data.value = []
+  updateList(1)
+})
+
+watch([() => groupStore.searchKeyword, () => groupStore.searchField], () => {
+  currentPage.value = 1
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => updateList(1), 300)
+})
+
+onUnmounted(() => window.clearTimeout(searchTimer))
 
 const updateGroupList = function () {
   http.post("/api/group/list").then(res => {
@@ -219,7 +236,7 @@ const del = function () {
     return;
   }
   let ids = rows.map(e => e.id);
-  let groupTag = JSON.parse(tag)
+  let groupTag = JSON.parse(currentTag())
 
   ElMessageBox.confirm(lang.del_email_confirm, 'Warning', {
     confirmButtonText: 'OK', cancelButtonText: 'Cancel', type: 'warning'
@@ -240,9 +257,8 @@ const rowStyle = function () {
 }
 
 const pageChange = function (p) {
-  http.post("/api/email/list", {tag: tag, page_size: 15, current_page: p}).then(res => {
-    data.value = res.data.list || []
-  })
+  currentPage.value = p
+  updateList(p)
 }
 </script>
 
@@ -396,6 +412,16 @@ const pageChange = function (p) {
   color: #222;
 }
 
+.mail-recipient {
+  flex: 0 1 28%;
+  min-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--pm-text-secondary);
+  font-size: 12px;
+}
+
 .mail-snippet {
   flex: 1;
   min-width: 0;
@@ -471,6 +497,10 @@ const pageChange = function (p) {
   }
   .mail-subject {
     max-width: 100%;
+  }
+  .mail-recipient {
+    width: 100%;
+    min-width: 0;
   }
   .mail-snippet {
     display: none;

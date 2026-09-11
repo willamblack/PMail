@@ -13,7 +13,19 @@
         prefix-icon="Search"
         clearable
         class="custom-search"
+        @input="openSearchResults"
+        @keyup.enter="openSearchResults"
       />
+      <el-select
+          v-model="searchField"
+          class="search-field"
+          size="small"
+          :aria-label="lang.search"
+          @change="openSearchResults"
+      >
+        <el-option :label="lang.search_all" value="all"/>
+        <el-option :label="lang.search_recipient" value="recipient"/>
+      </el-select>
     </div>
     
     <div class="menu-container">
@@ -50,8 +62,25 @@ const globalStatus = useGlobalStatusStore();
 const isLogin = computed(() => globalStatus.isLogin);
 const router = useRouter();
 const data = ref([]);
-const searchQuery = ref("");
+const searchQuery = computed({
+  get: () => groupStore.searchKeyword,
+  set: value => {
+    groupStore.searchKeyword = value;
+  },
+});
+const searchField = computed({
+  get: () => groupStore.searchField,
+  set: value => {
+    groupStore.searchField = value;
+  },
+});
 const activeGroup = ref(groupStore.tag);
+
+const openSearchResults = () => {
+  if (router.currentRoute.value.name !== "home" && router.currentRoute.value.name !== "list") {
+    router.push({name: "list"});
+  }
+};
 
 // Keep active menu synced with store
 watch(() => groupStore.tag, (newVal) => {
@@ -131,6 +160,18 @@ const openSettings = function () {
 
 .search-box {
   padding: 12px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-field {
+  width: 100%;
+}
+
+.search-field :deep(.el-select__wrapper) {
+  border-radius: 999px;
+  background-color: var(--pm-surface-solid);
 }
 
 .custom-search :deep(.el-input__wrapper) {

@@ -1,4 +1,4 @@
-let lang = {
+const enUS = {
     "logout": "Logout",
     "resetPwd": "Reset the account password",
     "disabled": "Disabled",
@@ -132,7 +132,12 @@ let lang = {
     "extensions_desc": "Manage available plugins and integrations.",
     "login_brand_desc": "Secure, elegant and distraction-free email experience for your team.",
     "login_subtitle": "Enter your credentials to access your mailbox",
-    "login_fill_required": "Please fill in both fields"
+    "login_fill_required": "Please fill in both fields",
+    "language": "Language",
+    "chinese": "Chinese",
+    "english": "English",
+    "search_all": "All fields",
+    "search_recipient": "Recipient"
 };
 
 
@@ -270,12 +275,37 @@ const zhCN = {
     "extensions_desc": "管理可用的扩展插件。",
     "login_brand_desc": "为你的团队提供安全、优雅且专注的邮件体验。",
     "login_subtitle": "请输入凭据以访问你的邮箱",
-    "login_fill_required": "请填写账号和密码"
+    "login_fill_required": "请填写账号和密码",
+    "language": "语言",
+    "chinese": "中文",
+    "english": "English",
+    "search_all": "全部",
+    "search_recipient": "收件人"
 }
 
-const browserLang = (navigator.languages && navigator.languages[0]) || navigator.language || "en";
-if (browserLang.toLowerCase().startsWith("zh")) {
-    lang = zhCN;
-}
+const languageStorageKey = "pmail-language";
 
+const getSavedLanguage = () => {
+    try {
+        return window.localStorage.getItem(languageStorageKey);
+    } catch (_) {
+        return null;
+    }
+};
+
+// PMail defaults to Chinese. An explicit browser-local choice takes precedence.
+const lang = getSavedLanguage() === "en" ? enUS : zhCN;
+document.documentElement.lang = lang.lang === "zhCn" ? "zh-CN" : "en";
+
+const setLanguage = (language) => {
+    const normalized = language === "en" ? "en" : "zhCn";
+    try {
+        window.localStorage.setItem(languageStorageKey, normalized);
+    } catch (_) {
+        // A restricted browser mode may prevent persistence; the default remains Chinese.
+    }
+    window.location.reload();
+};
+
+export {setLanguage};
 export default lang;

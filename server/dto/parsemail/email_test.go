@@ -57,6 +57,25 @@ func TestEmailDateFromReaderPreservesInstant(t *testing.T) {
 	}
 }
 
+func TestTencentStyleRecipientKeepsDisplayNameAndFullAddress(t *testing.T) {
+	raw := []byte("From: sender@qq.com\r\n" +
+		"To: =?utf-8?B?YWRtaW4=?= <alias@a.b.example.com>\r\n" +
+		"Subject: Tencent recipient\r\n" +
+		"Content-Type: text/plain; charset=UTF-8\r\n\r\n" +
+		"body")
+
+	email := NewEmailFromReader([]string{"alias@a.b.example.com"}, bytes.NewReader(raw), len(raw))
+	if len(email.To) != 1 {
+		t.Fatalf("To length = %d, want 1", len(email.To))
+	}
+	if email.To[0].Name != "admin" {
+		t.Errorf("To display name = %q, want %q", email.To[0].Name, "admin")
+	}
+	if email.To[0].EmailAddress != "alias@a.b.example.com" {
+		t.Errorf("To address = %q, want %q", email.To[0].EmailAddress, "alias@a.b.example.com")
+	}
+}
+
 func TestEmailDateFromModelPreservesUTCInstant(t *testing.T) {
 	expected := time.Date(2026, time.August, 9, 11, 51, 8, 0, time.UTC)
 	email := NewEmailFromModel(models.Email{

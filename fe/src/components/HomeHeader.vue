@@ -18,6 +18,10 @@
 
   <!-- Settings Drawer -->
   <el-drawer v-model="globalStatus.settingsDrawerVisible" :size="isMobile ? '100%' : '600px'" :title="lang.settings" class="settings-drawer" :with-header="true" direction="rtl">
+    <div class="language-setting">
+      <span>{{ lang.language }}</span>
+      <LanguageSelector/>
+    </div>
     <el-tabs :tab-position="isMobile ? 'top' : 'left'" class="settings-tabs">
       <el-tab-pane :label="lang.security">
         <SecuritySettings/>
@@ -47,6 +51,7 @@ import GroupSettings from './GroupSettings.vue';
 import RuleSettings from './RuleSettings.vue';
 import UserManagement from './UserManagement.vue';
 import PluginSettings from './PluginSettings.vue';
+import LanguageSelector from './LanguageSelector.vue';
 import {useGlobalStatusStore} from "@/stores/useGlobalStatusStore";
 
 const globalStatus = useGlobalStatusStore();
@@ -134,6 +139,16 @@ onUnmounted(() => {
 
 .settings-tabs {
   height: 100%;
+}
+
+.language-setting {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 0 4px 14px;
+  color: var(--pm-text-secondary);
+  font-size: 14px;
 }
 
 @media (max-width: 768px) {

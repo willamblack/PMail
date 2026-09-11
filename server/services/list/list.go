@@ -15,18 +15,22 @@ import (
 import . "xorm.io/builder"
 
 func GetEmailList(ctx *context.Context, tagInfo dto.SearchTag, keyword string, pop3List bool, offset, limit int) (emailList []*response.EmailResponseData, total int64) {
-	return getList(ctx, tagInfo, keyword, pop3List, offset, limit)
+	return getList(ctx, tagInfo, keyword, "all", pop3List, offset, limit)
 }
 
-func getList(ctx *context.Context, tagInfo dto.SearchTag, keyword string, pop3List bool, offset, limit int) (emailList []*response.EmailResponseData, total int64) {
-	querySQL, queryParams := genSQL(ctx, false, tagInfo, keyword, pop3List, offset, limit)
+func SearchEmailList(ctx *context.Context, tagInfo dto.SearchTag, keyword, searchField string, pop3List bool, offset, limit int) (emailList []*response.EmailResponseData, total int64) {
+	return getList(ctx, tagInfo, keyword, searchField, pop3List, offset, limit)
+}
+
+func getList(ctx *context.Context, tagInfo dto.SearchTag, keyword, searchField string, pop3List bool, offset, limit int) (emailList []*response.EmailResponseData, total int64) {
+	querySQL, queryParams := genSQL(ctx, false, tagInfo, keyword, searchField, pop3List, offset, limit)
 
 	err := db.Instance.SQL(querySQL, queryParams...).Find(&emailList)
 	if err != nil {
 		log.WithContext(ctx).Errorf("SQL ERROR: %s ,Error:%s", querySQL, err)
 	}
 
-	totalSQL, totalParams := genSQL(ctx, true, tagInfo, keyword, pop3List, offset, limit)
+	totalSQL, totalParams := genSQL(ctx, true, tagInfo, keyword, searchField, pop3List, offset, limit)
 
 	_, err = db.Instance.SQL(totalSQL, totalParams...).Get(&total)
 	if err != nil {
@@ -36,7 +40,7 @@ func getList(ctx *context.Context, tagInfo dto.SearchTag, keyword string, pop3Li
 	return emailList, total
 }
 
-func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword string, pop3List bool, offset, limit int) (string, []any) {
+func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword, searchField string, pop3List bool, offset, limit int) (string, []any) {
 	sqlParams := []any{ctx.UserID}
 	sql := "select "
 
@@ -91,10 +95,11 @@ func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword str
 		sqlParams = append(sqlParams, models.INBOX)
 	}
 
-	if keyword != "" {
-		sql += " and (subject like ? or text like ? )"
-		sqlParams = append(sqlParams, "%"+keyword+"%", "%"+keyword+"%")
+	quoteColumn := func(column string) string { return column }
+	if db.Instance != nil {
+		quoteColumn = db.Instance.Quote
 	}
+	sql, sqlParams = appendKeywordSearch(sql, sqlParams, keyword, searchField, quoteColumn)
 
 	if limit == 0 {
 		limit = 10
@@ -108,6 +113,27 @@ func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword str
 
 	return sql, sqlParams
 
+}
+
+func appendKeywordSearch(sql string, sqlParams []any, keyword, searchField string, quoteColumn func(string) string) (string, []any) {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return sql, sqlParams
+	}
+
+	recipientColumns := []string{"to", "cc", "bcc"}
+	columns := recipientColumns
+	if searchField != "recipient" {
+		columns = []string{"subject", "text", "html", "from_address", "from_name", "to", "cc", "bcc"}
+	}
+
+	conditions := make([]string, 0, len(columns))
+	pattern := "%" + keyword + "%"
+	for _, column := range columns {
+		conditions = append(conditions, "e."+quoteColumn(column)+" like ?")
+		sqlParams = append(sqlParams, pattern)
+	}
+	return sql + " and (" + strings.Join(conditions, " or ") + ")", sqlParams
 }
 
 type statRes struct {
