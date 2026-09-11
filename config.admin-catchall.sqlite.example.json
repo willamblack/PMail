@@ -1,0 +1,34 @@
+{
+  "logLevel": "info",
+  "domain": "117799.xyz",
+  "domains": [
+    "117799.xyz",
+    "nilinkeji.com"
+  ],
+  "acceptSubdomains": true,
+  "catchAllAccount": "admin",
+  "outboundHostname": "mail.117799.xyz",
+  "tlsNames": [
+    "mail.117799.xyz"
+  ],
+  "webDomain": "mail.117799.xyz",
+  "dkimPrivateKeyPath": "/work/config/dkim/dkim.priv",
+  "sslType": "1",
+  "SSLPrivateKeyPath": "/work/config/ssl/private.key",
+  "SSLPublicKeyPath": "/work/config/ssl/public.crt",
+  "dbDSN": "/work/config/pmail.db",
+  "dbType": "sqlite",
+  "httpsEnabled": 2,
+  "spamFilterLevel": 1,
+  "httpPort": 80,
+  "httpsPort": 443,
+  "weChatPushAppId": "",
+  "weChatPushSecret": "",
+  "weChatPushTemplateId": "",
+  "weChatPushUserId": "",
+  "tgBotToken": "",
+  "tgChatId": "",
+  "webPushUrl": "",
+  "webPushToken": "",
+  "isInit": true
+}

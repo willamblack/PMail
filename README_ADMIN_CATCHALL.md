@@ -1,5 +1,10 @@
 # PMail single-admin wildcard catch-all build
 
+For the complete Chinese Docker, SQLite, configuration-file and field
+reference, see [docs/CONFIGURATION_CN.md](docs/CONFIGURATION_CN.md). A valid
+JSON template is provided as
+[config.admin-catchall.sqlite.example.json](config.admin-catchall.sqlite.example.json).
+
 This fork keeps PMail's existing user and mailbox model and adds a narrowly
 scoped mode for one administrator:
 
@@ -100,6 +105,11 @@ docker run -d --name pmail --restart unless-stopped \
   -v "$(pwd)/config:/work/config" \
   ghcr.io/YOUR-GITHUB-USER/YOUR-REPOSITORY:v2.9.7-admincatchall.1
 ```
+
+`/work` is the final image's `WORKDIR`, not a required source directory on the
+host. The image contains `/work/pmail`, and PMail consequently reads runtime
+state from `/work/config`. The source-tree directory `server/config` is used
+while compiling the image. Mount only runtime data, not Go source files.
 
 Before exposing port 25, verify that external recipients receive SMTP 550 at
 the RCPT stage and configured root/subdomain recipients receive SMTP 250.

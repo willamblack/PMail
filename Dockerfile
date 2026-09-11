@@ -19,6 +19,9 @@ RUN cd /work/server/hooks/spam_block && go build -ldflags "-s -w" -o output/spam
 
 FROM alpine
 
+# PMail derives its runtime root from the executable directory. The binary is
+# installed as /work/pmail, so persistent runtime data belongs in /work/config.
+# This is different from the source-tree path server/config used at build time.
 WORKDIR /work
 
 # 设置时区
