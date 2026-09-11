@@ -51,6 +51,33 @@ The administrator account named by `catchAllAccount` must exist, be enabled,
 and have `is_admin=1`. Existing installations can add these fields manually and
 restart PMail.
 
+## DNS records shown by first-time setup
+
+The setup wizard uses `outboundHostname` as the one canonical mail service
+host. For every configured root it now shows:
+
+```text
+@                   MX   mail.example-mail-server.com
+*                   MX   mail.example-mail-server.com
+@                   TXT  v=spf1 mx ~all
+*                   TXT  v=spf1 mx ~all
+default._domainkey  TXT  v=DKIM1; k=rsa; p=...
+_dmarc              TXT  v=DMARC1; p=none; sp=none; adkim=r; aspf=r
+```
+
+It shows one A record for the canonical host instead of creating `smtp`,
+`imap`, and `pop` hosts under every recipient root. The table explicitly shows
+MX priority `10`; enter it in the DNS provider's separate priority field when
+the provider uses one. The MX target must
+resolve to A/AAAA and must not be a CNAME.
+
+DNS wildcards are synthesized only when the queried name does not already
+exist. If `shop.example.com` has any explicit DNS record, add exact MX/SPF
+records at `shop` and branch wildcard records at `*.shop` to cover descendants.
+The setup page calls this out explicitly. Existing installations must publish
+the same records manually for every root later added to `domains`, then restart
+PMail; only root domains, never `*.example.com`, belong in `config.json`.
+
 `tlsNames` prevents the built-in ACME client from deriving `smtp.`, `pop.`, and
 `imap.` names for every recipient domain. All MX records and mail clients should
 use the single hostname in `tlsNames`; it must resolve to the VPS and its

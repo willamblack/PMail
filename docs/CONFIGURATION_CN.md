@@ -177,6 +177,36 @@ docker run -d \
 - DMARC 应按组织域部署。多层子域 From 由根域 DKIM `d=` 签名时，使用默认/宽松的 `adkim=r` 可以对齐；不要设置严格的 `adkim=s`，否则子域 From 与根域 `d=` 不严格相等。
 - `mail.117799.xyz` 的 A/AAAA 必须指向 VPS；PTR 建议回指同一主机名，`outboundHostname` 也使用该名称。
 
+### 安装向导现在显示的 DNS 结构
+
+本分支的全新安装 `Set DNS` 页面不再要求为每个根域分别创建 `smtp`、`imap`、`pop` 和根域 A 记录。它会将所有根域的 MX 统一指向 `outboundHostname`，例如：
+
+```dns
+; 统一邮件服务主机，只需在其所属DNS区域配置一次
+mail                 A       45.76.44.12
+
+; domains中的每个根域都配置以下记录
+@                    MX      10 mail.117799.xyz.
+*                    MX      10 mail.117799.xyz.
+@                    TXT     "v=spf1 mx ~all"
+*                    TXT     "v=spf1 mx ~all"
+default._domainkey   TXT     "v=DKIM1; k=rsa; p=..."
+_dmarc               TXT     "v=DMARC1; p=none; sp=none; adkim=r; aspf=r"
+```
+
+安装表格会为 MX 显示优先级 `10`；如果域名服务商有单独的优先级字段，就在那里填写。部分服务商要求目标末尾带点，部分会自动补全，请以其控制台格式为准。MX 目标必须直接解析到 A/AAAA，不能使用 CNAME。
+
+`*` 是 DNS wildcard owner，不是程序语言中无条件递归的 `**`。如果 `shop.117799.xyz` 已经存在 A、TXT 等任意显式记录，根域的 `*` 将无法替这个节点及其分支合成所需记录。这时应补：
+
+```dns
+shop                 MX      10 mail.117799.xyz.
+shop                 TXT     "v=spf1 mx ~all"
+*.shop               MX      10 mail.117799.xyz.
+*.shop               TXT     "v=spf1 mx ~all"
+```
+
+以后直接在 `config.json` 的 `domains` 中增加根域时，PMail不会调用DNS服务商API；必须为新根域手工发布上面的 `@`、`*`、DKIM、DMARC 记录并重启容器。`domains` 中仍然只写根域，不能写 `*.域名`。
+
 ## 9. 修改和启动前检查
 
 先备份整个目录，尤其是 SQLite 和私钥：

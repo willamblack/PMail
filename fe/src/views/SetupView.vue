@@ -118,6 +118,14 @@
         <h2>{{ lang.setDNS }}</h2>
         <div style="margin-top: 10px;">{{ lang.dns_desc }}</div>
       </div>
+      <div class="dns-notices">
+        <el-alert :closable="false" :title="lang.dns_service_title" type="success" show-icon
+                  :description="lang.dns_service_desc"/>
+        <el-alert :closable="false" :title="lang.dns_wildcard_title" type="warning" show-icon
+                  :description="lang.dns_wildcard_desc"/>
+        <el-alert :closable="false" :title="lang.dns_existing_title" type="info" show-icon
+                  :description="lang.dns_existing_desc"/>
+      </div>
       <div class="form" width="600px" v-for="(info,domain) in dnsInfos" :key="info">
         <h3>{{ domain }}</h3>
         <el-table :data="info" border style="width: 100%">
@@ -133,6 +141,7 @@
             </template>
           </el-table-column>
           <el-table-column prop="type" label="TYPE" width="110px"/>
+          <el-table-column prop="priority" label="PRIORITY" width="100px"/>
           <el-table-column prop="value" label="VALUE">
             <template #default="scope">
               <div style="display: flex; align-items: center">
@@ -538,6 +547,14 @@ const next = () => {
   font-size: 32px;
   font-weight: 600;
   letter-spacing: -0.02em;
+}
+
+.dns-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(100%, 980px);
+  margin-bottom: 18px;
 }
 
 #status {
