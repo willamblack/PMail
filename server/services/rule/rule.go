@@ -12,6 +12,7 @@ import (
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/services/rule/match"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/send"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
@@ -155,12 +156,8 @@ func forwardToLocalUser(ctx *context.Context, email *parsemail.Email, account, f
 }
 
 func isLocalDomain(domain string) bool {
-	for _, localDomain := range config.Instance.Domains {
-		if strings.EqualFold(domain, localDomain) {
-			return true
-		}
-	}
-	return strings.EqualFold(domain, config.Instance.Domain)
+	_, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains)
+	return ok
 }
 
 func doMove(ctx *context.Context, rule *dto.Rule, email *parsemail.Email, user *models.User) {

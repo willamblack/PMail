@@ -14,9 +14,9 @@ import (
 	"github.com/Jinnrry/pmail/hooks"
 	"github.com/Jinnrry/pmail/hooks/framework"
 	"github.com/Jinnrry/pmail/models"
-	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/async"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	smtp "github.com/emersion/go-smtp"
 	log "github.com/sirupsen/logrus"
 	"xorm.io/builder"
@@ -143,6 +143,9 @@ func resolveIncomingUsers(ctx *context.Context, email *parsemail.Email, emailTyp
 	}
 
 	accounts := incomingAccounts(email, reallyTo)
+	if len(accounts) == 0 {
+		return nil, false, relayDeniedSMTPError()
+	}
 	var users []*models.User
 	if len(accounts) > 0 {
 		where, params, err := builder.ToSQL(builder.In("LOWER(account)", accounts))
@@ -157,10 +160,25 @@ func resolveIncomingUsers(ctx *context.Context, email *parsemail.Email, emailTyp
 		return users, false, nil
 	}
 
-	if DropUnknownRecipientEmails &&
-		((config.Instance.SpamFilterLevel == 1 && !SPFStatus && !dkimStatus) ||
-			(config.Instance.SpamFilterLevel == 2 && !SPFStatus) ||
-			(config.Instance.SpamFilterLevel == 3 && !dkimStatus)) {
+	catchAllAccount := strings.TrimSpace(config.Instance.CatchAllAccount)
+	if catchAllAccount != "" {
+		var catchAllUser models.User
+		has, err := db.Instance.Table(&models.User{}).
+			Where("LOWER(account)=LOWER(?) and disabled=0 and is_admin=1", catchAllAccount).
+			Get(&catchAllUser)
+		if err != nil {
+			return nil, false, err
+		}
+		if !has {
+			return nil, false, fmt.Errorf("catch-all administrator account %q is unavailable", catchAllAccount)
+		}
+		log.WithContext(ctx).Infof("未知本地收件人，转交Catch-All管理员: %s -> %s", email.From.EmailAddress, catchAllUser.Account)
+		return []*models.User{&catchAllUser}, false, nil
+	}
+
+	if (config.Instance.SpamFilterLevel == 1 && !SPFStatus && !dkimStatus) ||
+		(config.Instance.SpamFilterLevel == 2 && !SPFStatus) ||
+		(config.Instance.SpamFilterLevel == 3 && !dkimStatus) {
 		log.WithContext(ctx).Infoln("垃圾邮件，拒信")
 		log.WithContext(ctx).Infof("收件人不存在且DKIM验证失败，丢弃邮件: %s -> %v", email.From.EmailAddress, accounts)
 		return nil, true, nil
@@ -180,12 +198,11 @@ func incomingAccounts(email *parsemail.Email, reallyTo []string) []string {
 	var accounts []string
 	if len(reallyTo) > 0 {
 		for _, recipient := range reallyTo {
-			account := parsemail.BuilderUser(recipient)
-			if account == nil {
+			name, domain, err := maildomain.SplitAddress(recipient)
+			if err != nil {
 				continue
 			}
-			name, domain := account.GetDomainAccount()
-			if array.InArray(domain, config.Instance.Domains) && name != "" {
+			if _, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); ok && name != "" {
 				accounts = append(accounts, strings.ToLower(name))
 			}
 		}
@@ -193,8 +210,11 @@ func incomingAccounts(email *parsemail.Email, reallyTo []string) []string {
 	}
 	for _, recipients := range [][]*parsemail.User{email.To, email.Cc, email.Bcc} {
 		for _, user := range recipients {
-			account, _ := user.GetDomainAccount()
-			if account != "" {
+			account, domain, err := maildomain.SplitAddress(user.EmailAddress)
+			if err != nil {
+				continue
+			}
+			if _, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); ok && account != "" {
 				accounts = append(accounts, strings.ToLower(account))
 			}
 		}

@@ -101,7 +101,9 @@ func NewClient(conn net.Conn, host, fromDomain string) (*Client, error) {
 
 	localName := "domain.com"
 
-	if fromDomain != "" {
+	if config.Instance != nil && config.Instance.OutboundHostname != "" {
+		localName = config.Instance.OutboundHostname
+	} else if fromDomain != "" {
 		localName = fromDomain
 	} else if config.Instance != nil && config.Instance.Domain != "" {
 		localName = config.Instance.Domain

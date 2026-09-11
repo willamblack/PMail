@@ -3,10 +3,12 @@ package smtp_server
 import (
 	"database/sql"
 	"errors"
+	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/id"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/password"
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
@@ -65,7 +67,7 @@ func (s *Session) Auth(mech string) (sasl.Server, error) {
 }
 
 func (s *Session) AuthPlain(username, pwd string) error {
-	log.WithContext(s.Ctx).Debugf("Auth %s %s", username, pwd)
+	log.WithContext(s.Ctx).Debugf("Auth %s", username)
 
 	s.User = username
 
@@ -73,9 +75,15 @@ func (s *Session) AuthPlain(username, pwd string) error {
 
 	encodePwd := password.Encode(pwd)
 
-	infos := strings.Split(username, "@")
-	if len(infos) > 1 {
-		username = infos[0]
+	if strings.Contains(username, "@") {
+		account, domain, err := maildomain.SplitAddress(username)
+		if err != nil {
+			return errors.New("password error")
+		}
+		if _, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); !ok {
+			return errors.New("password error")
+		}
+		username = account
 	}
 
 	_, err := db.Instance.Where("account =? and password =? and disabled=0", username, encodePwd).Get(&user)
@@ -93,24 +101,74 @@ func (s *Session) AuthPlain(username, pwd string) error {
 		return nil
 	}
 
-	log.WithContext(s.Ctx).Debugf("登陆错误%s %s", username, pwd)
+	log.WithContext(s.Ctx).Debugf("登陆错误 %s", username)
 	return errors.New("password error")
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	if s.Ctx.UserID > 0 && !s.senderAuthorized(from) {
+		return senderRejectedSMTPError()
+	}
 	log.WithContext(s.Ctx).Debugf("Mail Success %+v %+v", from, opts)
 	s.From = from
 	return nil
 }
 
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+	if s.Ctx.UserID == 0 {
+		_, domain, err := maildomain.SplitAddress(to)
+		if err != nil {
+			return badRecipientSMTPError()
+		}
+		if _, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); !ok {
+			return relayDeniedSMTPError()
+		}
+	}
 	log.WithContext(s.Ctx).Debugf("Rcpt Success %+v", to)
 
 	s.To = append(s.To, to)
 	return nil
 }
 
-func (s *Session) Reset() {}
+func (s *Session) Reset() {
+	s.From = ""
+	s.To = nil
+}
+
+func (s *Session) senderAuthorized(address string) bool {
+	account, domain, err := maildomain.SplitAddress(address)
+	if err != nil {
+		return false
+	}
+	if _, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); !ok {
+		return false
+	}
+	return s.Ctx.IsAdmin || strings.EqualFold(account, s.Ctx.UserAccount)
+}
+
+func badRecipientSMTPError() error {
+	return &smtp.SMTPError{
+		Code:         501,
+		EnhancedCode: smtp.EnhancedCode{5, 1, 3},
+		Message:      "Bad recipient address syntax",
+	}
+}
+
+func relayDeniedSMTPError() error {
+	return &smtp.SMTPError{
+		Code:         550,
+		EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+		Message:      "Relay denied",
+	}
+}
+
+func senderRejectedSMTPError() error {
+	return &smtp.SMTPError{
+		Code:         553,
+		EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+		Message:      "Sender address is not authorized",
+	}
+}
 
 func (s *Session) Logout() error {
 	return nil

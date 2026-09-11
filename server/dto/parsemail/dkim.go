@@ -66,12 +66,15 @@ func loadPrivateKey(path string) (crypto.Signer, error) {
 	}
 }
 
-func (p *Dkim) Sign(msgData string) []byte {
+func (p *Dkim) Sign(msgData, signingDomain string) []byte {
 	var b bytes.Buffer
 	r := strings.NewReader(msgData)
+	if signingDomain == "" {
+		signingDomain = config.Instance.Domain
+	}
 
 	options := &dkim.SignOptions{
-		Domain:   config.Instance.Domain,
+		Domain:   signingDomain,
 		Selector: "default",
 		Signer:   p.privateKey,
 	}

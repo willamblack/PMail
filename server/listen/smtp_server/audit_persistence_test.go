@@ -139,6 +139,54 @@ func TestIncomingAuditRelationInsertRollsBackEmail(t *testing.T) {
 	assertAuditCounts(t, engine, 0, 0)
 }
 
+func TestUnknownLocalRecipientRoutesToConfiguredCatchAllAdmin(t *testing.T) {
+	engine, _ := newAuditTestEngine(t)
+	config.Instance.AcceptSubdomains = true
+	config.Instance.CatchAllAccount = "admin"
+	admin := &models.User{Account: "admin", Name: "Admin", IsAdmin: 1}
+	if _, err := engine.Insert(admin); err != nil {
+		t.Fatal(err)
+	}
+
+	from := &parsemail.User{Name: "External", EmailAddress: "external@example.net"}
+	email := &parsemail.Email{From: from, Sender: from}
+	users, dropped, err := resolveIncomingUsers(
+		&context.Context{},
+		email,
+		int(consts.EmailTypeReceive),
+		[]string{"anything@a.b.example.com"},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped {
+		t.Fatal("configured catch-all recipient was dropped")
+	}
+	if len(users) != 1 || users[0].ID != admin.ID {
+		t.Fatalf("catch-all users = %+v, want admin id %d", users, admin.ID)
+	}
+}
+
+func TestIncomingResolutionRejectsExternalDomainDefensively(t *testing.T) {
+	newAuditTestEngine(t)
+	config.Instance.AcceptSubdomains = true
+	config.Instance.CatchAllAccount = "admin"
+	from := &parsemail.User{Name: "External", EmailAddress: "external@example.net"}
+	email := &parsemail.Email{From: from, Sender: from}
+
+	_, _, err := resolveIncomingUsers(
+		&context.Context{},
+		email,
+		int(consts.EmailTypeReceive),
+		[]string{"victim@gmail.com"},
+		true,
+		true,
+	)
+	assertSMTPCode(t, err, 550)
+}
+
 func TestOutgoingAuditRetriesBusyFinalUpdateAtomically(t *testing.T) {
 	engine, dsn := newAuditTestEngine(t)
 	var blocker *sql.Tx

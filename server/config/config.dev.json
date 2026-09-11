@@ -1,6 +1,10 @@
 {
   "logLevel": "info",
   "domain": "domain.com",
+  "acceptSubdomains": true,
+  "catchAllAccount": "admin",
+  "outboundHostname": "mail.domain.com",
+  "tlsNames": ["mail.domain.com"],
   "webDomain": "mail.domain.com",
   "dkimPrivateKeyPath": "config/dkim/dkim.priv",
   "sslType": "0",

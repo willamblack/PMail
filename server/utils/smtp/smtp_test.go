@@ -9,7 +9,32 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Jinnrry/pmail/config"
 )
+
+func TestNewClientUsesConfiguredOutboundHostname(t *testing.T) {
+	oldConfig := config.Instance
+	config.Instance = &config.Config{Domain: "root.example", OutboundHostname: "mail.example.net"}
+	t.Cleanup(func() { config.Instance = oldConfig })
+
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+	go func() {
+		_, _ = io.WriteString(serverConn, "220 test ESMTP ready\r\n")
+	}()
+
+	client, err := NewClient(clientConn, "mx.remote.example", "dynamic.root.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.localName != "mail.example.net" {
+		t.Fatalf("localName = %q, want %q", client.localName, "mail.example.net")
+	}
+}
 
 func TestSendMailUnsafeUsesFinalDataResponseAsDeliveryResult(t *testing.T) {
 	tests := []struct {

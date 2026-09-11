@@ -1,0 +1,93 @@
+name: Build admin catch-all image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: OCI image tag
+        required: true
+        default: v2.9.7-admincatchall.1
+      publish_latest:
+        description: Also publish the latest tag
+        required: true
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag and normalize repository name
+        id: image
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ ! "$REQUESTED_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid OCI tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          echo "repository=${SOURCE_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "git_hash=$(git show -s --format=%H)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: fe/yarn.lock
+
+      - name: Build web UI
+        run: make build_fe
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push versioned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./DockerfileGithubAction
+          platforms: linux/386,linux/amd64,linux/arm/v7,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ inputs.tag }}
+            GITHASH=${{ steps.image.outputs.git_hash }}
+          tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.repository }}:${{ inputs.tag }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish latest alias
+        if: ${{ inputs.publish_latest }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./DockerfileGithubAction
+          platforms: linux/386,linux/amd64,linux/arm/v7,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ inputs.tag }}
+            GITHASH=${{ steps.image.outputs.git_hash }}
+          tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.repository }}:latest
+          provenance: mode=max
+          sbom: true

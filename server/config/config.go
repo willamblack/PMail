@@ -25,6 +25,10 @@ type Config struct {
 	LogLevel             string            `json:"logLevel"` // 日志级别
 	Domain               string            `json:"domain"`
 	Domains              []string          `json:"domains"` //多域名设置，把所有收信域名都填进去
+	AcceptSubdomains     bool              `json:"acceptSubdomains"`
+	CatchAllAccount      string            `json:"catchAllAccount"`
+	OutboundHostname     string            `json:"outboundHostname"`
+	TLSNames             []string          `json:"tlsNames"`
 	WebDomain            string            `json:"webDomain"`
 	DkimPrivateKeyPath   string            `json:"dkimPrivateKeyPath"`
 	SSLType              string            `json:"sslType"` // 0表示自动生成证书，HTTP挑战模式，1表示用户上传证书，2表示自动-DNS挑战模式
@@ -235,6 +239,8 @@ func ReadConfig() (*Config, error) {
 		DkimPrivateKeyPath: ROOT_PATH + "config/dkim/dkim.priv",
 		SSLPrivateKeyPath:  ROOT_PATH + "config/ssl/private.key",
 		SSLPublicKeyPath:   ROOT_PATH + "config/ssl/public.crt",
+		AcceptSubdomains:   true,
+		CatchAllAccount:    "admin",
 	}
 	if !file.PathExist(ROOT_PATH + "./config/config.json") {
 		bytes, _ := json.Marshal(configData)

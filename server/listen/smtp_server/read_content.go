@@ -19,20 +19,14 @@ import (
 	"github.com/Jinnrry/pmail/listen/imap_server"
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/services/rule"
-	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/async"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/send"
 	"github.com/mileusna/spf"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
 )
-
-// DropUnknownRecipientEmails 是代码级别的功能开关
-// 当设置为 true 时，发给不存在用户的邮件将被直接丢弃，不会保存到数据库
-// 这可以有效防止扫描器产生的垃圾邮件被存入第一个用户（管理员）的邮箱
-// 注意：此开关只能通过修改代码来更改，不暴露给用户配置
-const DropUnknownRecipientEmails = true
 
 func (s *Session) Data(r io.Reader) error {
 
@@ -73,9 +67,11 @@ func (s *Session) Data(r io.Reader) error {
 
 	// 判断是收信还是转发，只要是登陆了，都当成转发处理
 	if s.Ctx.UserID > 0 {
-		account, _ := email.From.GetDomainAccount()
-		if account != ctx.UserAccount && !ctx.IsAdmin {
-			return oerrors.New("No Auth")
+		if email.From == nil || !s.senderAuthorized(email.From.EmailAddress) {
+			return senderRejectedSMTPError()
+		}
+		if s.From != "" && !maildomain.EqualAddress(s.From, email.From.EmailAddress) {
+			return senderRejectedSMTPError()
 		}
 
 		log.WithContext(ctx).Debugf("开始执行插件SendBefore！")
@@ -102,8 +98,9 @@ func (s *Session) Data(r io.Reader) error {
 
 		SPFStatus = spfCheck(s.RemoteAddress.String(), email.Sender, email.Sender.EmailAddress)
 
-		_, formDomain := email.From.GetDomainAccount()
-		spoofed := array.InArray(formDomain, config.Instance.Domains) && SPFStatus == false
+		_, formDomain, fromErr := maildomain.SplitAddress(email.From.EmailAddress)
+		_, localSender := maildomain.MatchRoot(formDomain, config.Instance.Domains, config.Instance.AcceptSubdomains)
+		spoofed := fromErr == nil && localSender && SPFStatus == false
 		if spoofed {
 			dkimStatus = false
 		}

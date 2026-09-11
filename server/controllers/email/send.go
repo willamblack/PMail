@@ -12,9 +12,9 @@ import (
 	"github.com/Jinnrry/pmail/hooks/framework"
 	"github.com/Jinnrry/pmail/i18n"
 	"github.com/Jinnrry/pmail/models"
-	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/async"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/send"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
@@ -66,12 +66,13 @@ func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	}
 
 	if reqData.From.Email != "" {
-		infos := strings.Split(reqData.From.Email, "@")
-		if len(infos) != 2 || !array.InArray(infos[1], config.Instance.Domains) {
+		account, domain, parseErr := maildomain.SplitAddress(reqData.From.Email)
+		_, domainAllowed := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains)
+		if parseErr != nil || !domainAllowed {
 			response.NewErrorResponse(response.ParamsError, "params error", "").FPrint(w)
 			return
 		}
-		if !ctx.IsAdmin && infos[0] != ctx.UserAccount {
+		if !ctx.IsAdmin && !strings.EqualFold(account, ctx.UserAccount) {
 			response.NewErrorResponse(response.ParamsError, "params error", "").FPrint(w)
 			return
 		}

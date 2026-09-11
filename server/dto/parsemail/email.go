@@ -16,6 +16,7 @@ import (
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
@@ -533,7 +534,7 @@ func (e *Email) ForwardBuildBytes(ctx *context.Context, sender *models.User, for
 	}
 
 	// dkim 签名后返回
-	return instance.Sign(b.String())
+	return instance.Sign(b.String(), signingDomainForAddress(senderEmailAddress))
 }
 
 func (e *Email) BuildPart(ctx *context.Context, loc []int) []byte {
@@ -711,7 +712,20 @@ func (e *Email) BuildBytes(ctx *context.Context, dkim bool) []byte {
 
 	if dkim {
 		// dkim 签名后返回
-		return instance.Sign(b.String())
+		return instance.Sign(b.String(), signingDomainForAddress(e.From.EmailAddress))
 	}
 	return b.Bytes()
+}
+
+func signingDomainForAddress(address string) string {
+	if config.Instance == nil {
+		return ""
+	}
+	_, domain, err := maildomain.SplitAddress(address)
+	if err == nil {
+		if root, ok := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains); ok {
+			return root
+		}
+	}
+	return config.Instance.Domain
 }

@@ -77,6 +77,31 @@ func SetSSL(sslType, priKey, crtKey string) error {
 	return nil
 }
 
+func certificateDomains(cfg *config.Config) []string {
+	domains := cfg.TLSNames
+	if len(domains) == 0 {
+		domains = []string{cfg.WebDomain}
+		for _, domain := range cfg.Domains {
+			domains = append(domains, "smtp."+domain, "pop."+domain, "imap."+domain)
+		}
+	}
+
+	seen := make(map[string]struct{}, len(domains))
+	result := make([]string, 0, len(domains))
+	for _, rawDomain := range domains {
+		domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rawDomain), "."))
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		result = append(result, domain)
+	}
+	return result
+}
+
 func renewCertificate(privateKey *ecdsa.PrivateKey, cfg *config.Config) error {
 
 	myUser := MyUser{
@@ -121,15 +146,8 @@ func renewCertificate(privateKey *ecdsa.PrivateKey, cfg *config.Config) error {
 
 	myUser.Registration = reg
 
-	domains := []string{cfg.WebDomain}
-	for _, domain := range cfg.Domains {
-		domains = append(domains, "smtp."+domain)
-		domains = append(domains, "pop."+domain)
-		domains = append(domains, "imap."+domain)
-	}
-
 	request := certificate.ObtainRequest{
-		Domains: domains,
+		Domains: certificateDomains(cfg),
 		Bundle:  true,
 	}
 
@@ -201,15 +219,8 @@ func generateCertificate(privateKey *ecdsa.PrivateKey, cfg *config.Config, newAc
 
 	myUser.Registration = reg
 
-	domains := []string{cfg.WebDomain}
-	for _, domain := range cfg.Domains {
-		domains = append(domains, "smtp."+domain)
-		domains = append(domains, "pop."+domain)
-		domains = append(domains, "imap."+domain)
-	}
-
 	request := certificate.ObtainRequest{
-		Domains: domains,
+		Domains: certificateDomains(cfg),
 		Bundle:  true,
 	}
 
@@ -288,12 +299,14 @@ func CheckSSLCrtInfo() (int, time.Time, bool, error) {
 		return -1, time.Now(), true, errors.Wrap(err)
 	}
 
-	nameMatchFail := true
-	for _, name := range cert.DNSNames {
-		if strings.Contains(name, "imap") {
-			nameMatchFail = false
+	expectedNames := certificateDomains(cfg)
+	nameMatchFail := len(expectedNames) == 0
+	for _, name := range expectedNames {
+		if err := cert.VerifyHostname(name); err != nil {
+			nameMatchFail = true
 			break
 		}
+		nameMatchFail = false
 	}
 
 	// 检查过期时间
