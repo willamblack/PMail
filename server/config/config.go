@@ -240,7 +240,6 @@ func ReadConfig() (*Config, error) {
 		SSLPrivateKeyPath:  ROOT_PATH + "config/ssl/private.key",
 		SSLPublicKeyPath:   ROOT_PATH + "config/ssl/public.crt",
 		AcceptSubdomains:   true,
-		CatchAllAccount:    "admin",
 	}
 	if !file.PathExist(ROOT_PATH + "./config/config.json") {
 		bytes, _ := json.Marshal(configData)

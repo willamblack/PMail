@@ -11,6 +11,9 @@ func TestSetDomainSettingsEnablesSingleAdminCatchAllDefaults(t *testing.T) {
 	oldRoot := config.ROOT_PATH
 	config.ROOT_PATH = filepath.ToSlash(t.TempDir()) + "/"
 	t.Cleanup(func() { config.ROOT_PATH = oldRoot })
+	if err := config.WriteConfig(&config.Config{CatchAllAccount: "owner"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := SetDomainSettings(
 		"117799.XYZ.",
@@ -30,8 +33,8 @@ func TestSetDomainSettingsEnablesSingleAdminCatchAllDefaults(t *testing.T) {
 	if len(cfg.Domains) != 3 {
 		t.Fatalf("Domains = %#v, want three unique roots", cfg.Domains)
 	}
-	if !cfg.AcceptSubdomains || cfg.CatchAllAccount != "admin" {
-		t.Fatalf("catch-all defaults = accept:%t account:%q", cfg.AcceptSubdomains, cfg.CatchAllAccount)
+	if !cfg.AcceptSubdomains || cfg.CatchAllAccount != "owner" {
+		t.Fatalf("catch-all settings = accept:%t account:%q", cfg.AcceptSubdomains, cfg.CatchAllAccount)
 	}
 	if cfg.OutboundHostname != cfg.WebDomain {
 		t.Fatalf("OutboundHostname = %q, want %q", cfg.OutboundHostname, cfg.WebDomain)

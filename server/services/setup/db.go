@@ -52,6 +52,19 @@ func SetAdminPassword(ctx *context.Context, account, pwd string) error {
 		return errors.Wrap(err)
 	}
 
+	// The setup account is the single administrator for this deployment, so it
+	// is also the safest default catch-all target. Persist the actual account
+	// instead of assuming that every installation names it "admin".
+	configData, err := config.ReadConfig()
+	if err != nil {
+		return errors.Wrap(err)
+	}
+	configData.CatchAllAccount = account
+	if err = config.WriteConfig(configData); err != nil {
+		return errors.Wrap(err)
+	}
+	config.Instance.CatchAllAccount = account
+
 	return nil
 }
 

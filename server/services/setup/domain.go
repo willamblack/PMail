@@ -54,9 +54,6 @@ func SetDomainSettings(smtpDomain, webDomain, multiDomains string) error {
 
 	configData.Domain = normalizedSMTPDomain
 	configData.WebDomain = normalizedWebDomain
-	if configData.CatchAllAccount == "" {
-		configData.CatchAllAccount = "admin"
-	}
 	configData.AcceptSubdomains = true
 	if configData.OutboundHostname == "" {
 		configData.OutboundHostname = normalizedWebDomain
