@@ -51,7 +51,7 @@ func SetupStart() {
 
 	setupServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", HttpPort),
-		Handler:      mux,
+		Handler:      normalizeLeadingSlashes(mux),
 		ReadTimeout:  time.Second * 60,
 		WriteTimeout: time.Second * 60,
 	}

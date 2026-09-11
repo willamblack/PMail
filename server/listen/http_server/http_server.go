@@ -10,11 +10,44 @@ import (
 	log "github.com/sirupsen/logrus"
 	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 )
 
 // 这个服务是为了拦截http请求转发到https
 var httpServer *http.Server
+
+// normalizeLeadingSlashes prevents Go's ServeMux from redirecting a proxied
+// request such as //login back to /login. Some reverse proxies can preserve or
+// introduce more than one leading slash; if the public URL remains unchanged,
+// ServeMux's automatic 307 response becomes a redirect loop in the browser.
+//
+// Only literal leading slashes are collapsed. Encoded slashes and the rest of
+// the path are deliberately left untouched so ServeMux keeps applying its own
+// security-sensitive path handling.
+func normalizeLeadingSlashes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "//") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Do not turn an escaped slash into a path separator.
+		if r.URL.RawPath != "" && !strings.HasPrefix(r.URL.RawPath, "//") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		requestCopy := r.Clone(r.Context())
+		urlCopy := *r.URL
+		urlCopy.Path = "/" + strings.TrimLeft(r.URL.Path, "/")
+		if r.URL.RawPath != "" {
+			urlCopy.RawPath = "/" + strings.TrimLeft(r.URL.RawPath, "/")
+		}
+		requestCopy.URL = &urlCopy
+		next.ServeHTTP(w, requestCopy)
+	})
+}
 
 func HttpStop() {
 	if httpServer != nil {
@@ -73,7 +106,7 @@ func HttpStart() {
 		mux.HandleFunc("/", controllers.Interceptor)
 		httpServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", HttpPort),
-			Handler:      mux,
+			Handler:      normalizeLeadingSlashes(mux),
 			ReadTimeout:  time.Second * 90,
 			WriteTimeout: time.Second * 90,
 		}
@@ -84,7 +117,7 @@ func HttpStart() {
 		log.Infof("HttpServer Start On Port :%d", HttpPort)
 		httpServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", HttpPort),
-			Handler:      session.Instance.LoadAndSave(mux),
+			Handler:      normalizeLeadingSlashes(session.Instance.LoadAndSave(mux)),
 			ReadTimeout:  time.Second * 90,
 			WriteTimeout: time.Second * 90,
 		}
