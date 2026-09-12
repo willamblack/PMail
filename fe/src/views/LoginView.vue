@@ -90,7 +90,7 @@ const onSubmit = () => {
 <style scoped>
 .login-wrapper {
   width: 100vw;
-  height: 100vh;
+  height: 100%;
   background:
       radial-gradient(circle at 15% 20%, rgba(0, 113, 227, 0.1) 0%, transparent 36%),
       radial-gradient(circle at 85% 80%, rgba(0, 113, 227, 0.12) 0%, transparent 34%),

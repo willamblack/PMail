@@ -5,9 +5,52 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Jinnrry/pmail/dto"
+	"github.com/Jinnrry/pmail/utils/context"
 	_ "modernc.org/sqlite"
 	"xorm.io/xorm"
 )
+
+func TestCountQueryIsNotPaginated(t *testing.T) {
+	ctx := &context.Context{UserID: 1}
+	tag := dto.SearchTag{Type: -1, Status: -1, GroupId: -1}
+	listSQL, _ := genSQL(ctx, false, tag, "", "all", false, 15, 15)
+	countSQL, countParams := genSQL(ctx, true, tag, "", "all", false, 15, 15)
+	if !strings.Contains(listSQL, "LIMIT 15 OFFSET 15") {
+		t.Fatalf("page 2 query must be paginated: %s", listSQL)
+	}
+	if strings.Contains(strings.ToUpper(countSQL), "LIMIT") || strings.Contains(strings.ToUpper(countSQL), "OFFSET") {
+		t.Fatalf("count query must not be paginated: %s", countSQL)
+	}
+
+	engine, err := xorm.NewEngine("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open SQLite: %v", err)
+	}
+	engine.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = engine.Close() })
+	if _, err = engine.Exec(`create table email (id integer primary key)`); err != nil {
+		t.Fatalf("create email table: %v", err)
+	}
+	if _, err = engine.Exec(`create table user_email (email_id integer, user_id integer, status integer, group_id integer)`); err != nil {
+		t.Fatalf("create user_email table: %v", err)
+	}
+	for id := 1; id <= 31; id++ {
+		if _, err = engine.Exec(`insert into email (id) values (?)`, id); err != nil {
+			t.Fatalf("insert email %d: %v", id, err)
+		}
+		if _, err = engine.Exec(`insert into user_email (email_id, user_id, status, group_id) values (?, 1, 0, 0)`, id); err != nil {
+			t.Fatalf("insert user_email %d: %v", id, err)
+		}
+	}
+	var total int64
+	if _, err = engine.SQL(countSQL, countParams...).Get(&total); err != nil {
+		t.Fatalf("count page 2: %v", err)
+	}
+	if total != 31 {
+		t.Fatalf("page 2 total = %d, want 31", total)
+	}
+}
 
 func TestAppendKeywordSearchRecipient(t *testing.T) {
 	sql, params := appendKeywordSearch("select * from email e where 1=1", []any{7}, "order-123@shop.example.com", "recipient", quoteTestColumn)

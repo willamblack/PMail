@@ -128,6 +128,7 @@ const openSettings = function () {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: linear-gradient(180deg, var(--pm-sidebar-grad-start) 0%, var(--pm-sidebar-grad-end) 100%);
   animation: pm-rise-in 0.4s var(--pm-ease-out);
 }
@@ -190,7 +191,8 @@ const openSettings = function () {
 }
 
 .menu-container {
-  flex-grow: 1;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 10px;
 }
@@ -227,7 +229,9 @@ const openSettings = function () {
 }
 
 .sidebar-footer {
+  flex-shrink: 0;
   padding: 14px 16px 18px;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--pm-border-color);
   margin-top: auto;
 }

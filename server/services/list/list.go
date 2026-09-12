@@ -101,14 +101,16 @@ func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword, se
 	}
 	sql, sqlParams = appendKeywordSearch(sql, sqlParams, keyword, searchField, quoteColumn)
 
-	if limit == 0 {
-		limit = 10
-	}
-
-	sql += " order by e.id desc"
-
-	if limit < 10000 {
-		sql += fmt.Sprintf(" LIMIT %d OFFSET %d ", limit, offset)
+	// A count query has exactly one result row. Applying page OFFSET to it
+	// drops that row on page 2 and makes the client hide pagination entirely.
+	if !count {
+		if limit == 0 {
+			limit = 10
+		}
+		sql += " order by e.id desc"
+		if limit < 10000 {
+			sql += fmt.Sprintf(" LIMIT %d OFFSET %d ", limit, offset)
+		}
 	}
 
 	return sql, sqlParams

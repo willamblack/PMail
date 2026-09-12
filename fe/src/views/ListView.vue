@@ -266,9 +266,8 @@ const pageChange = function (p) {
 .list-view-container {
   display: flex;
   flex-direction: column;
-  /* 【修复核心】让其优先贴合父元素高度，保底视口高度 */
   height: 100%;
-  min-height: 100vh;
+  min-height: 0;
   background: var(--pm-surface-glass);
   border: 1px solid var(--pm-glass-border);
   border-radius: var(--pm-radius-xl);
@@ -382,12 +381,14 @@ const pageChange = function (p) {
   justify-content: space-between;
   align-items: center;
   width: 100%;
+  min-width: 0;
 }
 
 .mail-main-info {
   display: flex;
   align-items: center;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   gap: 12px;
 }
 
@@ -432,6 +433,7 @@ const pageChange = function (p) {
 }
 
 .mail-meta {
+  flex-shrink: 0;
   min-width: 80px;
   text-align: right;
   padding-right: 16px;
@@ -457,8 +459,8 @@ const pageChange = function (p) {
 .pagination-wrapper {
   flex-shrink: 0;
   padding: 10px 0;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom)); /* 【修复核心】适配 iPhone 底部小黑条 */
-  background-color: transparent; /* 【修复核心】去除白色背景避免暗黑模式突兀 */
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  background-color: transparent;
   margin-top: 14px;
   display: flex;
   justify-content: center;
@@ -472,10 +474,8 @@ const pageChange = function (p) {
 
 @media (max-width: 768px) {
   .list-view-container {
-    /* 【修复核心】移动端强制计算高度，减去顶部 Mobile Header 高度 (通常约为 56px)，使用 dvh 避免滚动遮挡 */
-    height: calc(100dvh - 56px);
-    min-height: auto;
-    padding: 12px; /* 移动端适当减小 padding，留出更多可视空间 */
+    padding: 12px;
+    backdrop-filter: none;
   }
 
   .list-header {
@@ -494,6 +494,7 @@ const pageChange = function (p) {
   }
   .mail-sender {
     width: 100%;
+    min-width: 0;
   }
   .mail-subject {
     max-width: 100%;
