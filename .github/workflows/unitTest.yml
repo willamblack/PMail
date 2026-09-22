@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [master, codex/admin-wildcard-catchall]
   push:
-    branches: [codex/admin-wildcard-catchall]
+    branches: [master, codex/admin-wildcard-catchall]
   workflow_dispatch:
 
 permissions:

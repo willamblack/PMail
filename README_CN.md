@@ -6,6 +6,7 @@ PMail是一个追求极简部署流程、极致资源占用的个人域名邮箱
 
 > [!IMPORTANT]
 > 本 Fork 的单管理员“多根域 + 任意层级子域 + 任意 local-part”版本，请先阅读[Docker 与完整配置说明](docs/CONFIGURATION_CN.md)，不要直接套用上游旧版 `config.json`。
+> 本 Fork 的默认提交、分支同步与发布流程见[发布说明](docs/RELEASING_CN.md)。
 
 欢迎各类PR，无论你是修复bug、新增功能、修改翻译。另外，也为这个项目征集一个漂亮可爱的Logo！
 
@@ -159,4 +160,3 @@ IMAP端口： 993(SSL)
 ## 插件开发
 
 [go to wiki](https://github.com/Jinnrry/PMail/wiki/%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91%E8%AF%B4%E6%98%8E)
-

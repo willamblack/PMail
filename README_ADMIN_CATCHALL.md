@@ -104,20 +104,26 @@ the already built web assets from `server/listen/http_server/dist`.
 
 ## Publish with GitHub Actions
 
-When this workflow exists only on the customization branch, GitHub may not
-offer it in the manual workflow list. Push a new unused `0.*` version tag
-pointing to this branch instead (for example `git tag 0.07 && git push fork 0.07`).
-This starts the catch-all image workflow from that tag, publishes only its
-versioned image, and leaves `latest` unchanged. Never move an already published
-tag. Do not also publish a GitHub Release for the same tag unless you intend
-to run the separate release workflows and update `latest`.
+The default release order for this fork is: commit and push
+`codex/admin-wildcard-catchall`, verify its checks, synchronize `master`, and
+publish a new stable GitHub Release from that exact commit. See the
+[Chinese release guide](docs/RELEASING_CN.md).
 
-If the workflow is available in GitHub's manual workflow list:
+Publishing the release starts the catch-all Docker workflow once and publishes
+both the versioned image and `latest` from the same build. The separate binary
+workflow adds release ZIP assets. The legacy stable Docker workflow is disabled
+for `willamblack/PMail` to prevent duplicate writers. Pushing a tag alone no
+longer starts a Docker build. Never move an already published version tag.
+
+For an explicitly requested manual image build (without creating a release):
 
 1. Push this source to a GitHub repository under your account.
 2. Open **Actions → Build admin catch-all image → Run workflow**.
 3. Keep the tag `v2.9.7-admincatchall.1` or choose another valid OCI tag.
 4. Make the resulting GHCR package public if anonymous `docker pull` is needed.
+
+Manual builds leave `latest` unchanged unless `publish_latest` is selected.
+Do not manually rebuild a version already being published by a Release event.
 
 The pull command will be:
 

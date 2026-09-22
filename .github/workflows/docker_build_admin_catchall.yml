@@ -1,10 +1,10 @@
 name: Build admin catch-all image
 
 on:
-  # Tag events can run this fork-only workflow without adding it to master.
-  push:
-    tags:
-      - '0.*'
+  # Both maintained branches carry this workflow. Publishing a stable release
+  # is the single automatic Docker trigger; merely pushing a tag is not.
+  release:
+    types: [released]
   workflow_dispatch:
     inputs:
       tag:
@@ -20,6 +20,10 @@ on:
 env:
   REGISTRY: ghcr.io
 
+concurrency:
+  group: admin-image-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -34,9 +38,9 @@ jobs:
         id: image
         shell: bash
         env:
-          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+          REQUESTED_TAG: ${{ github.event.release.tag_name || inputs.tag }}
           SOURCE_REPOSITORY: ${{ github.repository }}
-          PUBLISH_LATEST: ${{ inputs.publish_latest }}
+          PUBLISH_LATEST: ${{ github.event_name == 'release' || inputs.publish_latest }}
         run: |
           if [[ ! "$REQUESTED_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "Invalid OCI tag: $REQUESTED_TAG" >&2
