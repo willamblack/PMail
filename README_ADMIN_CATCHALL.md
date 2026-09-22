@@ -104,6 +104,16 @@ the already built web assets from `server/listen/http_server/dist`.
 
 ## Publish with GitHub Actions
 
+When this workflow exists only on the customization branch, GitHub may not
+offer it in the manual workflow list. Push a new unused `0.*` version tag
+pointing to this branch instead (for example `git tag 0.07 && git push fork 0.07`).
+This starts the catch-all image workflow from that tag, publishes only its
+versioned image, and leaves `latest` unchanged. Never move an already published
+tag. Do not also publish a GitHub Release for the same tag unless you intend
+to run the separate release workflows and update `latest`.
+
+If the workflow is available in GitHub's manual workflow list:
+
 1. Push this source to a GitHub repository under your account.
 2. Open **Actions → Build admin catch-all image → Run workflow**.
 3. Keep the tag `v2.9.7-admincatchall.1` or choose another valid OCI tag.
