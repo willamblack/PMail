@@ -39,18 +39,18 @@ func (s *serverSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) e
 	connects.mu.Unlock()
 	userConnectsMu.Unlock()
 
-	go func() {
-		<-stop
-
-		userConnectsMu.Lock()
-		connects.mu.Lock()
-		delete(connects.writers, logId)
-		if len(connects.writers) == 0 {
-			userConnects.Delete(userId)
-		}
-		connects.mu.Unlock()
-		userConnectsMu.Unlock()
-	}()
+	// go-imap already calls Idle in a goroutine and waits for its return before
+	// acknowledging DONE. Complete cleanup here so a previous IDLE cannot
+	// remove the registration belonging to the next IDLE on this connection.
+	<-stop
+	userConnectsMu.Lock()
+	connects.mu.Lock()
+	delete(connects.writers, logId)
+	if len(connects.writers) == 0 {
+		userConnects.Delete(userId)
+	}
+	connects.mu.Unlock()
+	userConnectsMu.Unlock()
 
 	return nil
 }

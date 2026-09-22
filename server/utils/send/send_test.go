@@ -8,6 +8,8 @@ import (
 	"github.com/Jinnrry/pmail/utils/context"
 	"net"
 	"net/textproto"
+	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -132,5 +134,115 @@ func TestDeliveryFailureCauseKeepsExplicitSMTPRejection(t *testing.T) {
 
 	if got := deliveryFailureCause(lookupErr, rejection); got != rejection {
 		t.Fatalf("deliveryFailureCause() = %v, want explicit SMTP rejection %v", got, rejection)
+	}
+}
+
+func TestDoSendGroupsRecipientsBeforeRotatingMXLookup(t *testing.T) {
+	var lookups atomic.Int32
+	lookup := func(domain string) ([]*net.MX, error) {
+		if domain != "example.net" {
+			t.Errorf("lookup domain = %q, want normalized example.net", domain)
+		}
+		if lookups.Add(1)%2 == 1 {
+			return []*net.MX{{Host: "mx1.example.net.", Pref: 10}, {Host: "mx2.example.net.", Pref: 10}}, nil
+		}
+		return []*net.MX{{Host: "mx2.example.net.", Pref: 10}, {Host: "mx1.example.net.", Pref: 10}}, nil
+	}
+	var mu sync.Mutex
+	var groups [][]string
+	deliver := func(_ *context.Context, _, _, _, _ string, recipients []string, _ []byte) error {
+		mu.Lock()
+		groups = append(groups, append([]string(nil), recipients...))
+		mu.Unlock()
+		return nil
+	}
+	recipients := []*parsemail.User{{EmailAddress: "first@EXAMPLE.NET"}, {EmailAddress: "second@example.net."}}
+	err, failures := doSendWithRouting(&context.Context{}, "example.com", nil, recipients, "sender@example.com", lookup, deliver)
+	if err != nil || len(failures) != 0 {
+		t.Fatalf("delivery failed: %v, %v", err, failures)
+	}
+	if lookups.Load() != 1 || len(groups) != 1 || !reflect.DeepEqual(groups[0], buildAddress(recipients)) {
+		t.Fatalf("same domain split by rotating MX: lookups=%d groups=%v", lookups.Load(), groups)
+	}
+}
+
+func TestDoSendKeepsTemporaryFailureForWholeDomain(t *testing.T) {
+	var lookups atomic.Int32
+	lookup := func(string) ([]*net.MX, error) {
+		first, second := "mx1.example.net.", "mx2.example.net."
+		if lookups.Add(1)%2 == 0 {
+			first, second = second, first
+		}
+		return []*net.MX{{Host: first, Pref: 10}, {Host: second, Pref: 10}}, nil
+	}
+	var deliveries atomic.Int32
+	temporary := &textproto.Error{Code: 451, Msg: "try later"}
+	deliver := func(_ *context.Context, _, _, _, _ string, recipients []string, _ []byte) error {
+		deliveries.Add(1)
+		if len(recipients) != 2 {
+			// Separate tasks could overwrite the domain's temporary failure with
+			// a later permanent rejection for another recipient.
+			return &textproto.Error{Code: 550, Msg: "split recipient rejected"}
+		}
+		return temporary
+	}
+	err, failures := doSendWithRouting(&context.Context{}, "example.com", nil,
+		[]*parsemail.User{{EmailAddress: "first@example.net"}, {EmailAddress: "second@example.net"}},
+		"sender@example.com", lookup, deliver)
+	if err == nil || len(failures) != 1 || failures["example.net"] != temporary {
+		t.Fatalf("temporary domain failure lost: error=%v failures=%v", err, failures)
+	}
+	if lookups.Load() != 1 || deliveries.Load() != 2 {
+		t.Fatalf("want one lookup and both MX attempts, got lookups=%d deliveries=%d", lookups.Load(), deliveries.Load())
+	}
+}
+
+func TestDoSendKeepsDifferentDomainsAndFailuresIndependent(t *testing.T) {
+	lookups := map[string]int{}
+	lookup := func(domain string) ([]*net.MX, error) {
+		lookups[domain]++
+		return []*net.MX{{Host: "mx1." + domain, Pref: 10}, {Host: "mx2." + domain, Pref: 20}}, nil
+	}
+	var mu sync.Mutex
+	attempts := map[string]int{}
+	permanent := &textproto.Error{Code: 550, Msg: "mailbox unavailable"}
+	temporary := &textproto.Error{Code: 451, Msg: "try later"}
+	deliver := func(_ *context.Context, _, domain, _, _ string, _ []string, _ []byte) error {
+		mu.Lock()
+		attempts[domain]++
+		mu.Unlock()
+		if domain == "example.net" {
+			return permanent
+		}
+		return temporary
+	}
+	err, failures := doSendWithRouting(&context.Context{}, "example.com", nil,
+		[]*parsemail.User{{EmailAddress: "first@example.net"}, {EmailAddress: "second@example.org"}},
+		"sender@example.com", lookup, deliver)
+	if err == nil || len(failures) != 2 || failures["example.net"] != permanent || failures["example.org"] != temporary {
+		t.Fatalf("independent failures lost: error=%v failures=%v", err, failures)
+	}
+	if lookups["example.net"] != 1 || lookups["example.org"] != 1 || attempts["example.net"] != 1 || attempts["example.org"] != 2 {
+		t.Fatalf("MX rejection/failover policy changed: lookups=%v attempts=%v", lookups, attempts)
+	}
+}
+
+func TestDoSendValidatesAllRecipientsBeforeRouting(t *testing.T) {
+	for _, invalid := range []*parsemail.User{nil, {EmailAddress: "invalid"}} {
+		var lookups, deliveries atomic.Int32
+		lookup := func(string) ([]*net.MX, error) {
+			lookups.Add(1)
+			return nil, nil
+		}
+		deliver := func(_ *context.Context, _, _, _, _ string, _ []string, _ []byte) error {
+			deliveries.Add(1)
+			return nil
+		}
+		err, failures := doSendWithRouting(&context.Context{}, "example.com", nil,
+			[]*parsemail.User{{EmailAddress: "valid@example.net"}, invalid},
+			"sender@example.com", lookup, deliver)
+		if err == nil || len(failures) != 0 || lookups.Load() != 0 || deliveries.Load() != 0 {
+			t.Fatalf("invalid list reached DNS/delivery: err=%v failures=%v lookups=%d deliveries=%d", err, failures, lookups.Load(), deliveries.Load())
+		}
 	}
 }

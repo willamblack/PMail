@@ -17,17 +17,6 @@ import (
 	"sync"
 )
 
-type mxDomain struct {
-	domain string
-	mxHost string
-}
-
-// mxFailoverEntry 记录一个收件人域名的全部 MX 主机（按优先级排序）。
-type mxFailoverEntry struct {
-	domain  string
-	mxHosts []string
-}
-
 type temporaryMXFallbackError struct {
 	lookupErr   error
 	fallbackErr error
@@ -99,51 +88,52 @@ func deliveryRecipients(e *parsemail.Email) []*parsemail.User {
 }
 
 func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemail.User, from string) (error, map[string]error) {
+	return doSendWithRouting(ctx, fromDomain, data, to, from, net.LookupMX, tryDeliverToMX)
+}
+
+func doSendWithRouting(ctx *context.Context, fromDomain string, data []byte, to []*parsemail.User, from string,
+	lookupMX func(string) ([]*net.MX, error),
+	deliver func(*context.Context, string, string, string, string, []string, []byte) error,
+) (error, map[string]error) {
 	if len(to) == 0 {
 		return errors.New("no delivery recipients"), nil
 	}
-	// Validate the entire recipient list before delivering to any domain.
+	// Validate every address before DNS or delivery, then group by normalized
+	// domain. Equal-preference MX results can rotate between lookups; an MX
+	// hostname must not split one domain into independently failing tasks.
+	toByDomain := map[string][]*parsemail.User{}
 	for _, recipient := range to {
 		if recipient == nil {
 			return errors.New("invalid delivery recipient"), nil
 		}
-		if _, _, err := maildomain.SplitAddress(recipient.EmailAddress); err != nil {
+		_, domain, err := maildomain.SplitAddress(recipient.EmailAddress)
+		if err != nil {
 			return errors.New("invalid delivery recipient"), nil
 		}
+		toByDomain[domain] = append(toByDomain[domain], recipient)
 	}
 
-	// 按域名整理
-	toByDomain := map[mxDomain][]*parsemail.User{}
-	mxLookupErrors := map[mxDomain]error{}
+	mxLookupErrors := map[string]error{}
 	// mxFailoverMap 保存每个域名的完整 MX 列表（按优先级排序），用于故障转移
 	mxFailoverMap := map[string][]string{}
-	for _, s := range to {
-		_, recipientDomain, _ := maildomain.SplitAddress(s.EmailAddress)
+	for recipientDomain := range toByDomain {
 		// All recipient domains use normal DNS routing, including test names.
-		mxInfo, lookupErr := net.LookupMX(recipientDomain)
-		address := mxDomain{
-			domain: recipientDomain,
-			mxHost: recipientDomain,
-		}
+		mxInfo, lookupErr := lookupMX(recipientDomain)
+		mxHosts := []string{recipientDomain}
 		if lookupErr != nil {
-			log.WithContext(ctx).Errorf("%s 域名mx记录查询失败，检查邮箱是否存在！", s.EmailAddress)
+			log.WithContext(ctx).Errorf("%s 域名mx记录查询失败，检查邮箱是否存在！", recipientDomain)
 		}
 		if len(mxInfo) > 0 {
-			address = mxDomain{
-				domain: recipientDomain,
-				mxHost: mxInfo[0].Host,
-			}
 			// 保存全部 MX 主机（net.LookupMX 已按优先级排序）
-			allHosts := make([]string, 0, len(mxInfo))
+			mxHosts = make([]string, 0, len(mxInfo))
 			for _, mx := range mxInfo {
-				allHosts = append(allHosts, mx.Host)
+				mxHosts = append(mxHosts, mx.Host)
 			}
-			mxFailoverMap[recipientDomain] = allHosts
 		}
+		mxFailoverMap[recipientDomain] = mxHosts
 		if lookupErr != nil {
-			mxLookupErrors[address] = lookupErr
+			mxLookupErrors[recipientDomain] = lookupErr
 		}
-		toByDomain[address] = append(toByDomain[address], s)
 	}
 
 	var errEmailAddress []string
@@ -167,14 +157,11 @@ func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemai
 				}
 				errEmailAddressMu.Unlock()
 
-				errMap.Store(domain.domain, err)
+				errMap.Store(domain, err)
 			}
 
 			// 获取该域名的全部 MX 主机（按优先级排序），用于故障转移
-			mxHosts := mxFailoverMap[domain.domain]
-			if len(mxHosts) == 0 {
-				mxHosts = []string{domain.mxHost}
-			}
+			mxHosts := mxFailoverMap[domain]
 
 			// 按优先级逐个尝试 MX 主机（RFC 5321 §5.1）
 			var lastErr error
@@ -183,7 +170,7 @@ func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemai
 					log.WithContext(ctx).Infof("MX %s 投递失败，尝试下一个 MX: %s (%d/%d)", mxHosts[i-1], mxHost, i+1, len(mxHosts))
 				}
 
-				err := tryDeliverToMX(ctx, mxHost, domain.domain, from, fromDomain, buildAddress(tos), data)
+				err := deliver(ctx, mxHost, domain, from, fromDomain, buildAddress(tos), data)
 				if err == nil {
 					return
 				}

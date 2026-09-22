@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	stdmail "net/mail"
 	"net/textproto"
 	"regexp"
 	"strings"
@@ -305,16 +306,24 @@ func NewEmailFromReader(to []string, r io.Reader, size int) *Email {
 	subject, _ := m.Header.Text("Subject")
 	ret.Subject = strictPolicy.Sanitize(subject)
 
-	sendTime, err := time.Parse(time.RFC1123Z, m.Header.Get("Date"))
+	sendTime, err := stdmail.ParseDate(m.Header.Get("Date"))
 	if err != nil {
 		sendTime = time.Now()
 	}
 	ret.Date = sendTime.Format(time.RFC3339)
+	var parentTypes []string
 	m.Walk(func(path []int, entity *message.Entity, err error) error {
 		if entity == nil {
 			return err
 		}
-		return formatContent(entity, ret)
+		// A filename alone does not make a top-level/alternative inline body
+		// an attachment. Only separate named siblings from an existing body.
+		depth := len(path)
+		namedFile := depth > 0 && (ret.Text != nil || ret.HTML != nil) &&
+			(parentTypes[depth-1] == "multipart/mixed" || parentTypes[depth-1] == "multipart/related")
+		mediaType, _, _ := entity.Header.ContentType()
+		parentTypes = append(parentTypes[:depth], mediaType)
+		return formatContent(entity, ret, namedFile)
 	})
 
 	if ret.From != nil {
@@ -325,15 +334,22 @@ func NewEmailFromReader(to []string, r io.Reader, size int) *Email {
 	return ret
 }
 
-func formatContent(entity *message.Entity, ret *Email) error {
+func formatContent(entity *message.Entity, ret *Email, separateNamedFile bool) error {
 	contentType, p, err := entity.Header.ContentType()
 
 	if err != nil {
 		log.Errorf("email read error! %+v", err)
 		return err
 	}
-	disp := strings.ToLower(entity.Header.Get("Content-Disposition"))
-	isAttachment := strings.Contains(disp, "attachment")
+	disp, dispositionParams, dispositionErr := entity.Header.ContentDisposition()
+	if dispositionErr != nil {
+		// Keep explicit attachments separate even if a parameter is malformed.
+		disp, _, _ = strings.Cut(entity.Header.Get("Content-Disposition"), ";")
+	}
+	// Named files after the body of a mixed/related message must not replace
+	// that body; preserve standalone and multipart/alternative inline bodies.
+	isAttachment := strings.EqualFold(strings.TrimSpace(disp), "attachment") ||
+		(separateNamedFile && (dispositionParams["filename"] != "" || p["name"] != ""))
 	switch contentType {
 	case "multipart/alternative":
 	case "multipart/mixed":
@@ -389,6 +405,11 @@ func formatContent(entity *message.Entity, ret *Email) error {
 	return nil
 }
 func getFileName(entity *message.Entity, p map[string]string) string {
+	_, dispositionParams, _ := entity.Header.ContentDisposition()
+	if name := dispositionParams["filename"]; name != "" {
+		// ContentDisposition also decodes RFC 2231 filename* parameters.
+		return name
+	}
 	fileName := p["name"]
 
 	if fileName != "" {

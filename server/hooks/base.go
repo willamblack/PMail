@@ -254,6 +254,42 @@ func NewHookSender(socketPath string, name string, serverVersion string) *HookSe
 
 var processList []*os.Process
 
+// hookRegistration serializes registration with process exit. Protecting only
+// the name is insufficient: an exited process must never be registered later.
+type hookRegistration struct {
+	mu     sync.Mutex
+	name   string
+	hook   *HookSender
+	exited bool
+}
+
+func (r *hookRegistration) register(name string, hook *HookSender) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exited {
+		return false
+	}
+	RegisterHook(name, hook)
+	r.name, r.hook = name, hook
+	return true
+}
+
+func (r *hookRegistration) processExited() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.exited = true
+	if r.hook == nil {
+		return
+	}
+	hookListMu.Lock()
+	defer hookListMu.Unlock()
+	// Another process may have registered the same name in the meantime.
+	// Only remove this process's instance, never its replacement.
+	if current, ok := HookList[r.name].(*HookSender); ok && current == r.hook {
+		delete(HookList, r.name)
+	}
+}
+
 // Init 注册hook对象
 func Init(serverVersion string) {
 
@@ -294,22 +330,12 @@ func Init(serverVersion string) {
 
 			pluginNo++
 
-			// registeredName 记录该插件最终注册进 HookList 使用的键。
-			// 清理协程在插件进程退出后必须用同一个键去移除，
-			// 否则会残留指向已死亡 socket 的 HookSender。
-			var registeredName string
-			var registeredNameMu sync.Mutex
+			registration := &hookRegistration{}
 
 			go func() {
 				stat, err := p.Wait()
-				log.Errorf("[%s] Plugin Stop. Error:%v Stat:%v", info.Name(), err, stat.String())
-				registeredNameMu.Lock()
-				name := registeredName
-				registeredNameMu.Unlock()
-				if name != "" {
-					RemoveHook(name)
-					log.Infof("[%s] Plugin Removed From HookList", name)
-				}
+				registration.processExited()
+				log.Errorf("[%s] Plugin Stop. Error:%v Stat:%v", info.Name(), err, stat)
 				os.Remove(socketPath)
 			}()
 
@@ -331,11 +357,9 @@ func Init(serverVersion string) {
 					// GetName 失败时退回插件文件名作为键，避免出现空键。
 					hkName = info.Name()
 				}
-				RegisterHook(hkName, hk)
-				registeredNameMu.Lock()
-				registeredName = hkName
-				registeredNameMu.Unlock()
-				log.Infof("[%s] Plugin Load Success!", hkName)
+				if registration.register(hkName, hk) {
+					log.Infof("[%s] Plugin Load Success!", hkName)
+				}
 			}
 
 		}
