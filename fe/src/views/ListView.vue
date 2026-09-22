@@ -13,14 +13,14 @@
             <el-icon><Switch /></el-icon> {{ lang.invert_selection_btn }}
           </el-button>
         </div>
-        <el-button @click="del" class="action-btn" plain>
+        <el-button @click="del" class="action-btn" plain :disabled="loading || selectedRows.length === 0">
           <el-icon><Delete /></el-icon> {{ lang.del_btn }}
         </el-button>
-        <el-button @click="markRead" class="action-btn" plain>
+        <el-button @click="markRead" class="action-btn" plain :disabled="loading || selectedRows.length === 0">
           <el-icon><View /></el-icon> {{ lang.read_btn }}
         </el-button>
         <el-dropdown class="move-dropdown">
-          <el-button class="action-btn" plain>
+          <el-button class="action-btn" plain :disabled="loading || selectedRows.length === 0">
             <el-icon><Folder /></el-icon> {{ lang.move_btn }}
             <el-icon class="el-icon--right"><EpArrowDownBold/></el-icon>
           </el-button>
@@ -38,7 +38,10 @@
       </div>
     </div>
 
-    <div class="list-content">
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
+      <el-button size="small" @click="updateList()">{{ lang.retry }}</el-button>
+    </el-alert>
+    <div class="list-content" v-loading="loading">
       <el-table height="100%"
                 ref="taskTableDataRef"
                 :data="data"
@@ -91,8 +94,8 @@
           background
           layout="prev, pager, next"
           :page-count="totalPage"
-          v-model:current-page="currentPage"
-          @current-change="pageChange"
+          :current-page="currentPage"
+          @update:current-page="pageChange"
       />
     </div>
   </div>
@@ -108,6 +111,7 @@ import lang from '../i18n/i18n';
 import {http} from "@/utils/axios";
 import {ElMessage, ElMessageBox} from "element-plus";
 import {formatRecipientList} from "@/utils/email";
+import {createRequestScope} from "@/utils/requestScope";
 
 const router = useRouter();
 const groupStore = useGroupStore()
@@ -117,44 +121,77 @@ const selectedRows = ref([])
 const data = ref([])
 const totalPage = ref(0)
 const currentPage = ref(1)
-let listRequestID = 0
+const loading = ref(false)
+const loadError = ref("")
+const requests = createRequestScope()
 let searchTimer
 
 const currentTag = () => groupStore.tag || '{"type":0,"status":-1}'
 
-const updateList = function (page = currentPage.value) {
-  const requestID = ++listRequestID
-  http.post("/api/email/list", {
-    tag: currentTag(),
-    page_size: 15,
-    current_page: page,
-    keyword: groupStore.searchKeyword.trim(),
-    search_field: groupStore.searchField,
-  }).then(res => {
-    if (requestID !== listRequestID) return
-    data.value = res.data.list || []
-    totalPage.value = res.data.total_page || 0
-  })
+const clearSelection = () => {
+  selectedRows.value = []
+  taskTableDataRef.value?.clearSelection()
 }
 
-watch(() => groupStore.tag, () => {
-  currentPage.value = 1
+const updateList = async function (page = currentPage.value) {
+  window.clearTimeout(searchTimer)
+  const request = requests.start()
+  if (!request) return
+  loading.value = true
+  loadError.value = ""
+  clearSelection()
   data.value = []
-  updateList(1)
-})
+  try {
+    const res = await http.post("/api/email/list", {
+      tag: currentTag(),
+      page_size: 15,
+      current_page: page,
+      keyword: groupStore.searchKeyword.trim(),
+      search_field: groupStore.searchField,
+    }, {signal: request.signal})
+    if (!request.isCurrent()) return
+    if (res.errorNo !== 0 || !res.data || typeof res.data !== "object") {
+      throw new Error(res.errorMsg || lang.load_failed)
+    }
+    const pages = Math.max(0, Number(res.data.total_page) || 0)
+    // Deleting/moving the last item on the last page must return to a real page.
+    if (pages > 0 && page > pages) {
+      currentPage.value = pages
+      return updateList(pages)
+    }
+    data.value = Array.isArray(res.data.list) ? res.data.list : []
+    totalPage.value = pages
+  } catch (error) {
+    if (request.isCurrent()) loadError.value = error.message || lang.load_failed
+  } finally {
+    if (request.isCurrent()) loading.value = false
+  }
+}
 
-watch([() => groupStore.searchKeyword, () => groupStore.searchField], () => {
+watch([() => groupStore.tag, () => groupStore.searchKeyword, () => groupStore.searchField],
+    ([tag], [previousTag]) => {
+  // Invalidate before waiting for debounce: old results cannot be selected
+  // under the new search or folder and accidentally deleted/moved.
+  requests.invalidate()
+  clearSelection()
+  data.value = []
+  loadError.value = ""
+  loading.value = true
   currentPage.value = 1
   window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(() => updateList(1), 300)
+  if (tag !== previousTag) updateList(1)
+  else searchTimer = window.setTimeout(() => updateList(1), 300)
 })
 
-onUnmounted(() => window.clearTimeout(searchTimer))
+onUnmounted(() => {
+  window.clearTimeout(searchTimer)
+  requests.dispose()
+})
 
 const updateGroupList = function () {
   http.post("/api/group/list").then(res => {
     groupList.value = res.data || []
-  })
+  }).catch(() => { groupList.value = [] })
 }
 
 updateList()
@@ -191,6 +228,7 @@ const invertSelection = () => {
 }
 
 const markRead = function () {
+  if (loading.value) return
   let rows = taskTableDataRef.value?.getSelectionRows()
   if (!rows || rows.length === 0) {
     ElMessage.warning('Select emails first');
@@ -208,6 +246,7 @@ const markRead = function () {
 }
 
 const move = function (group_id, group_name) {
+  if (loading.value) return
   let rows = taskTableDataRef.value?.getSelectionRows()
   if (!rows || rows.length === 0) {
     ElMessage.warning('Select emails first');
@@ -230,6 +269,7 @@ const move = function (group_id, group_name) {
 }
 
 const del = function () {
+  if (loading.value) return
   let rows = taskTableDataRef.value?.getSelectionRows()
   if (!rows || rows.length === 0) {
     ElMessage.warning('Select emails first');

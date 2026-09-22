@@ -71,15 +71,18 @@ func NewEmailAuthentication(spfPassed, dkimPassed bool) *EmailAuthentication {
 
 // Email is the type used for email messages
 type Email struct {
-	ReplyTo        []*User
-	From           *User
-	To             []*User
+	ReplyTo []*User
+	From    *User
+	To      []*User
+	// EnvelopeTo is set only for SMTP submissions. A non-nil slice is the
+	// authoritative RCPT list; message headers must never add delivery targets.
+	EnvelopeTo     []string `json:"-"`
 	Bcc            []*User
 	Cc             []*User
 	Subject        string
 	Text           []byte // Plaintext message (optional)
 	HTML           []byte // Html message (optional)
-	Sender         *User  // override From as SMTP envelope sender (optional)
+	Sender         *User  // RFC Sender header metadata; does not override SMTP envelope From
 	Headers        textproto.MIMEHeader
 	Attachments    []*Attachment
 	ReadReceipt    []string
@@ -127,10 +130,12 @@ func init() {
 	relaxedPolicy.AllowAttrs("align").OnElements("p", "div", "h1", "h2", "h3", "h4", "h5", "h6")
 
 	relaxedPolicy.AllowElements("img")
-	relaxedPolicy.AllowAttrs("src", "alt", "width", "height", "style", "align").OnElements("img")
+	relaxedPolicy.AllowAttrs("src").Matching(regexp.MustCompile(`(?i)^(?:https?://|cid:|/attachments/[1-9][0-9]*/)[^\x00-\x20]*$`)).OnElements("img")
+	relaxedPolicy.AllowAttrs("alt", "width", "height", "style", "align").OnElements("img")
 
 	relaxedPolicy.AllowElements("a")
-	relaxedPolicy.AllowAttrs("href", "style").OnElements("a")
+	relaxedPolicy.AllowAttrs("href").Matching(regexp.MustCompile(`(?i)^(?:https?://|mailto:)[^\x00-\x20]*$`)).OnElements("a")
+	relaxedPolicy.AllowAttrs("style").OnElements("a")
 	relaxedPolicy.RequireNoReferrerOnLinks(true)
 	relaxedPolicy.AddTargetBlankToFullyQualifiedLinks(true)
 	relaxedPolicy.RequireNoFollowOnLinks(true)
@@ -141,7 +146,10 @@ func init() {
 	relaxedPolicy.AllowElements("style")
 	relaxedPolicy.AllowAttrs("type").OnElements("style")
 
-	relaxedPolicy.AllowURLSchemes("http", "https", "mailto")
+	relaxedPolicy.AllowURLSchemes("http", "https", "mailto", "cid")
+	// Relative image URLs are restricted to the authenticated attachment route
+	// by the src rule above. Arbitrary relative links remain disallowed.
+	relaxedPolicy.AllowRelativeURLs(true)
 
 	relaxedPolicy.SkipElementsContent("script", "object", "embed", "iframe", "frame", "frameset")
 }
@@ -169,6 +177,11 @@ func sanitizeHTML(htmlContent string) string {
 	sanitized = cssJsRegex.ReplaceAllString(sanitized, "")
 
 	return sanitized
+}
+
+// SanitizeHTMLForDisplay also protects messages stored by older versions.
+func SanitizeHTMLForDisplay(htmlContent string) string {
+	return sanitizeHTML(htmlContent)
 }
 
 // Sanitize Text
@@ -249,6 +262,11 @@ func NewEmailFromReader(to []string, r io.Reader, size int) *Email {
 	if err != nil {
 		log.Errorf("email解析错误！ Error %+v", err)
 	}
+	// Unknown charset/encoding errors can still return a usable entity. A nil
+	// entity instead means malformed headers and must not be dereferenced.
+	if m == nil {
+		return nil
+	}
 
 	ret.Size = size
 	// Preserve the original Message-ID from the sender so it is stored and reused consistently.
@@ -280,7 +298,7 @@ func NewEmailFromReader(to []string, r io.Reader, size int) *Email {
 	ret.Cc = buildUsers(m.Header.Values("Cc"))
 	ret.ReplyTo = buildUsers(m.Header.Values("ReplyTo"))
 	ret.Sender = buildUser(m.Header.Get("Sender"))
-	if ret.Sender == nil {
+	if ret.Sender == nil || ret.Sender.EmailAddress == "" {
 		ret.Sender = ret.From
 	}
 
@@ -293,6 +311,9 @@ func NewEmailFromReader(to []string, r io.Reader, size int) *Email {
 	}
 	ret.Date = sendTime.Format(time.RFC3339)
 	m.Walk(func(path []int, entity *message.Entity, err error) error {
+		if entity == nil {
+			return err
+		}
 		return formatContent(entity, ret)
 	})
 
@@ -349,14 +370,10 @@ func formatContent(entity *message.Entity, ret *Email) error {
 			return nil
 		}
 
-		ret.HTML = []byte(relaxedPolicy.Sanitize(string(body)))
+		ret.HTML = []byte(sanitizeHTML(string(body)))
 	case "multipart/related":
-		entity.Walk(func(path []int, entity *message.Entity, err error) error {
-			if t, _, _ := entity.Header.ContentType(); t == "multipart/related" {
-				return nil
-			}
-			return formatContent(entity, ret)
-		})
+		// The outer Entity.Walk already visits these children. Walking again
+		// duplicates inline attachments and consumes multipart bodies twice.
 	default:
 		c, _ := io.ReadAll(entity.Body)
 		fileName := getFileName(entity, p)
@@ -445,11 +462,15 @@ func buildUsers(strs []string) []*User {
 			continue
 		}
 
-		parts := strings.Split(line, ",")
-		for _, part := range parts {
-			if u := buildUser(strings.TrimSpace(part)); u != nil {
-				ret = append(ret, u)
-			}
+		addresses, err := mail.ParseAddressList(line)
+		if err != nil {
+			// Preserve the historical tolerant handling of a malformed header,
+			// but do not split quoted display names/local-parts at commas.
+			ret = append(ret, buildUser(line))
+			continue
+		}
+		for _, address := range addresses {
+			ret = append(ret, &User{EmailAddress: address.Address, Name: strictPolicy.Sanitize(address.Name)})
 		}
 	}
 	return ret
@@ -459,10 +480,10 @@ func (e *Email) ForwardBuildBytes(ctx *context.Context, sender *models.User, for
 	var b bytes.Buffer
 
 	forwardUser := buildUser(forwardAddress)
-	to := []*mail.Address{{forwardUser.Name, forwardUser.EmailAddress}}
+	to := []*mail.Address{{Name: forwardUser.Name, Address: forwardUser.EmailAddress}}
 
 	senderEmailAddress := fmt.Sprintf("%s@%s", sender.Account, config.Instance.Domains[0])
-	senderAddress := []*mail.Address{{sender.Name, senderEmailAddress}}
+	senderAddress := []*mail.Address{{Name: sender.Name, Address: senderEmailAddress}}
 	// Create our mail header
 	var h mail.Header
 	h.SetDate(time.Now())
@@ -470,7 +491,7 @@ func (e *Email) ForwardBuildBytes(ctx *context.Context, sender *models.User, for
 	h.SetAddressList("Sender", senderAddress)
 	h.SetAddressList("To", to)
 	if e.From != nil && e.From.EmailAddress != "" {
-		h.SetAddressList("Reply-To", []*mail.Address{{e.From.Name, e.From.EmailAddress}})
+		h.SetAddressList("Reply-To", []*mail.Address{{Name: e.From.Name, Address: e.From.EmailAddress}})
 		h.Set("X-Original-From", e.From.Build())
 	}
 	h.Set("X-Forwarded-By", senderEmailAddress)
@@ -603,7 +624,7 @@ func (e *Email) BuildPart(ctx *context.Context, loc []int) []byte {
 func (e *Email) BuildBytes(ctx *context.Context, dkim bool) []byte {
 	var b bytes.Buffer
 
-	from := []*mail.Address{{e.From.Name, e.From.EmailAddress}}
+	from := []*mail.Address{{Name: e.From.Name, Address: e.From.EmailAddress}}
 	to := []*mail.Address{}
 	for _, user := range e.To {
 		to = append(to, &mail.Address{

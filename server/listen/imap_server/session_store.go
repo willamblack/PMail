@@ -1,67 +1,56 @@
 package imap_server
 
 import (
-	"github.com/Jinnrry/pmail/dto/response"
-	"github.com/Jinnrry/pmail/services/del_email"
-	"github.com/Jinnrry/pmail/services/detail"
-	"github.com/Jinnrry/pmail/services/list"
+	"github.com/Jinnrry/pmail/db"
+	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
-	"github.com/spf13/cast"
 )
 
+// Deleted flags are session-local. Only EXPUNGE removes stored mail.
 func (s *serverSession) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
-
-	if flags.Op == imap.StoreFlagsSet {
-		return nil
+	if s.readOnly {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "mailbox is read-only"}
 	}
-
-	var emailList []*response.EmailResponseData
-
-	switch numSet.(type) {
-	case imap.SeqSet:
-		seqSet := numSet.(imap.SeqSet)
-		for _, seq := range seqSet {
-			res := list.GetEmailListByGroup(s.ctx, s.currentMailbox, list.ImapListReq{
-				Star: cast.ToInt(seq.Start),
-				End:  cast.ToInt(seq.Stop),
-			}, false)
-			emailList = append(emailList, res...)
+	emails := s.messages(numSet)
+	for _, email := range emails {
+		seen := email.IsRead == 1
+		deleted := array.InArray(email.UeId, s.deleteUidList)
+		apply := func(old, requested bool) bool {
+			switch flags.Op {
+			case imap.StoreFlagsSet:
+				return requested
+			case imap.StoreFlagsAdd:
+				return old || requested
+			case imap.StoreFlagsDel:
+				return old && !requested
+			}
+			return old
 		}
-
-	case imap.UIDSet:
-		uidSet := numSet.(imap.UIDSet)
-		for _, uid := range uidSet {
-			res := list.GetEmailListByGroup(s.ctx, s.currentMailbox, list.ImapListReq{
-				Star: cast.ToInt(uint32(uid.Start)),
-				End:  cast.ToInt(uint32(uid.Stop)),
-			}, true)
-			emailList = append(emailList, res...)
+		seen = apply(seen, array.InArray(imap.FlagSeen, flags.Flags))
+		deleted = apply(deleted, array.InArray(imap.FlagDeleted, flags.Flags))
+		read := int8(0)
+		if seen {
+			read = 1
 		}
+		if _, err := db.Instance.Table(&models.UserEmail{}).Where("id=? and user_id=?", email.UeId, s.ctx.UserID).Update(map[string]interface{}{"is_read": read}); err != nil {
+			return err
+		}
+		email.IsRead = read
+		var pending []int
+		for _, id := range s.deleteUidList {
+			if id != email.UeId {
+				pending = append(pending, id)
+			}
+		}
+		if deleted {
+			pending = append(pending, email.UeId)
+		}
+		s.deleteUidList = pending
 	}
-
-	if array.InArray(imap.FlagSeen, flags.Flags) && flags.Op == imap.StoreFlagsAdd {
-		for _, data := range emailList {
-			detail.MakeRead(s.ctx, data.Id, flags.Op == imap.StoreFlagsAdd)
-		}
+	if !flags.Silent && w != nil {
+		write(s.ctx, w, emails, &imap.FetchOptions{Flags: true, UID: true}, s.deleteUidList, false)
 	}
-
-	if array.InArray(imap.FlagDeleted, flags.Flags) && flags.Op == imap.StoreFlagsAdd {
-		for _, data := range emailList {
-			s.deleteUidList = append(s.deleteUidList, data.UeId)
-		}
-	}
-
-	err := del_email.DelByUID(s.ctx, s.deleteUidList)
-	s.deleteUidList = []int{}
-
-	if err != nil {
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Text: err.Error(),
-		}
-	}
-
 	return nil
 }

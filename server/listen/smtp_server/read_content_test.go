@@ -2,54 +2,107 @@ package smtp_server
 
 import (
 	"bytes"
+	stdcontext "context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/db"
-	parsemail2 "github.com/Jinnrry/pmail/dto/parsemail"
 	"github.com/Jinnrry/pmail/hooks"
-	"github.com/Jinnrry/pmail/session"
+	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/context"
-	log "github.com/sirupsen/logrus"
+	"github.com/mileusna/spf"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"testing"
-	"time"
+	"xorm.io/xorm"
 )
 
-func testInit() {
-	// 设置日志格式为json格式
-	//log.SetFormatter(&log.JSONFormatter{})
-
-	log.SetReportCaller(true)
-	log.SetFormatter(&log.TextFormatter{
-		//以下设置只是为了使输出更美观
-		DisableColors:   true,
-		TimestampFormat: "2006-01-02 15:03:04",
+func testInit(t *testing.T) {
+	t.Helper()
+	oldRoot, oldConfig, oldInit := config.ROOT_PATH, config.Instance, config.IsInit
+	oldDB, oldHooks, oldResolver := db.Instance, hooks.HookList, net.DefaultResolver
+	oldSPFServer := spf.DNSServer
+	t.Cleanup(func() {
+		config.ROOT_PATH, config.Instance, config.IsInit = oldRoot, oldConfig, oldInit
+		db.Instance, hooks.HookList, net.DefaultResolver = oldDB, oldHooks, oldResolver
+		spf.DNSServer = oldSPFServer
 	})
+	config.ROOT_PATH = t.TempDir() + "/"
+	keyPath := filepath.Join(config.ROOT_PATH, "config/dkim/dkim.priv")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config.Instance = &config.Config{
+		Domain: "fixture.example", Domains: []string{"fixture.example", "linuxuser.site", "jinnrry.com", "jiangwei.one", "qq.com"},
+		DbType: config.DBTypeSQLite, DbDSN: filepath.Join(config.ROOT_PATH, "config/fixture.db"),
+		DkimPrivateKeyPath: keyPath, CatchAllAccount: "admin", AcceptSubdomains: true, IsInit: true,
+	}
+	config.IsInit = true
+	if err = config.WriteConfig(config.Instance); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := xorm.NewEngine("sqlite", config.Instance.DbDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+	engine.SetMaxOpenConns(1)
+	if err = engine.Sync2(&models.User{}, &models.Email{}, &models.UserEmail{}, &models.Rule{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = engine.Insert(&models.User{Account: "admin", Name: "Fixture admin", IsAdmin: 1}); err != nil {
+		t.Fatal(err)
+	}
+	db.Instance = engine
+	// These historical MIME fixtures exercise receiving, not notification or
+	// forwarding integrations. Never start plugins, listeners or real sessions.
+	hooks.HookList = nil
+	// Exercise the real SPF/DKIM failure paths without querying public DNS.
+	// This is test-scoped dependency replacement, not a production auth bypass.
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(stdcontext.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("DNS disabled for offline SMTP fixture")
+	}}
+	// The SPF library has its own DNS client. Its deliberately invalid address
+	// fails before opening a socket, even if a future fixture sets MAIL FROM.
+	spf.DNSServer = "127.0.0.1" // missing port: deterministic resolver failure
+}
 
-	// 设置将日志输出到标准输出（默认的输出为stderr,标准错误）
-	// 日志消息输出可以是任意的io.writer类型
-	log.SetOutput(os.Stdout)
+func receiveFixture(t *testing.T, session *Session, message string) {
+	t.Helper()
+	before, err := db.Instance.Count(&models.Email{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Data(bytes.NewReader([]byte(message))); err != nil {
+		t.Fatalf("receive fixture: %v", err)
+	}
+	count, err := db.Instance.Count(&models.Email{})
+	if err != nil || count != before+1 {
+		t.Fatalf("fixture not persisted exactly once: before=%d count=%d err=%v", before, count, err)
+	}
+}
 
-	// 设置日志级别为warn以上
-	log.SetLevel(log.ErrorLevel)
-
-	var cst, _ = time.LoadLocation("Asia/Shanghai")
-	time.Local = cst
-
-	config.Init()
-	config.Instance.DkimPrivateKeyPath = config.ROOT_PATH + "./config/dkim/dkim.priv"
-	config.Instance.DbType = config.DBTypeSQLite
-	config.Instance.DbDSN = config.ROOT_PATH + "./config/pmail_temp.db"
-
-	parsemail2.Init()
-	db.Init("")
-	session.Init()
-	hooks.Init("dev")
+func TestOfflineFixtureSPFReturnsFailureWithoutNetwork(t *testing.T) {
+	testInit(t)
+	if result := spf.CheckHost(net.ParseIP("203.0.113.1"), "example.com", "sender@example.com", "mx.example.com"); result != spf.TempError {
+		t.Fatalf("offline SPF resolver result = %v, want TempError", result)
+	}
 }
 
 func TestGmail(t *testing.T) {
-	testInit()
+	testInit(t)
 	emailData := `Received: by mail-dl1-f46.google.com with SMTP id a92af1059eb24-132c338a537so5798485c88.0
         for ; Sun, 24 May 2026 08:18:19 -0700 (PDT)
 ARC-Seal: i=1; a=rsa-sha256; t=1779635898; cv=none;
@@ -133,12 +186,12 @@ PGRpdiBkaXI9Imx0ciI+PGRpdj7mraPmlofmtYvor5UyPC9kaXY+PC9kaXY+DQo=
 		To:            []string{"xfox@linuxuser.site"},
 	}
 
-	s.Data(bytes.NewReader([]byte(emailData)))
+	receiveFixture(t, &s, emailData)
 
 }
 
 func TestPmailEmail(t *testing.T) {
-	testInit()
+	testInit(t)
 	emailData := `DKIM-Signature: a=rsa-sha256; bh=x7Rh+N2y2K9exccEAyKCTAGDgYKfnLZpMWc25ug5Ny4=;
  c=simple/simple; d=domain.com;
  h=Content-Type:Mime-Version:Subject:To:From:Date; s=default; t=1693831868;
@@ -184,12 +237,12 @@ Content-Type: text/html
 		To: []string{"ok@jinnrry.com"},
 	}
 
-	s.Data(bytes.NewReader([]byte(emailData)))
+	receiveFixture(t, &s, emailData)
 
 }
 
 func TestRuleForward(t *testing.T) {
-	testInit()
+	testInit(t)
 
 	forwardEmail := `DKIM-Signature: a=rsa-sha256; bh=bpOshF+iimuqAQijVxqkH6gPpWf8A+Ih30/tMjgEgS0=;
  c=simple/simple; d=jinnrry.com;
@@ -344,14 +397,14 @@ Content-Type: text/html
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(deleteEmail)))
-	s.Data(bytes.NewReader([]byte(readEmail)))
-	s.Data(bytes.NewReader([]byte(forwardEmail)))
-	s.Data(bytes.NewReader([]byte(moveEmail)))
+	receiveFixture(t, &s, deleteEmail)
+	receiveFixture(t, &s, readEmail)
+	receiveFixture(t, &s, forwardEmail)
+	receiveFixture(t, &s, moveEmail)
 }
 
 func TestRuleRead(t *testing.T) {
-	testInit()
+	testInit(t)
 
 	readEmail := `DKIM-Signature: a=rsa-sha256; bh=JcCDj6edb1bAwRbcFZ63plFZOeB5AdGWLE/PQ2FQ1Tc=;
  c=simple/simple; d=jinnrry.com;
@@ -395,12 +448,12 @@ Content-Type: text/html
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(readEmail)))
+	receiveFixture(t, &s, readEmail)
 
 }
 
 func TestRuleDelete(t *testing.T) {
-	testInit()
+	testInit(t)
 
 	deleteEmail := `DKIM-Signature: a=rsa-sha256; bh=dNtHGqd1NbRj0WSwrJmPsqAcAy3h/4kZK2HFQ0Asld8=;
  c=simple/simple; d=jinnrry.com;
@@ -444,12 +497,12 @@ Content-Type: text/html
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(deleteEmail)))
+	receiveFixture(t, &s, deleteEmail)
 
 }
 
 func TestNullCC(t *testing.T) {
-	testInit()
+	testInit(t)
 
 	emailData := `Date: Mon, 29 Jan 2024 16:54:30 +0800
 Return-Path: 1231@111.com
@@ -487,11 +540,11 @@ Pui/meaYr+S4gOWwgeadpeiHqlJlbGF4RHJhbWHnmoTmoKHpqozpgq7ku7Ys55So5LqO5qCh6aqM
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(emailData)))
+	receiveFixture(t, &s, emailData)
 }
 
 func TestRuleMove(t *testing.T) {
-	testInit()
+	testInit(t)
 
 	moveEmail := `DKIM-Signature: a=rsa-sha256; bh=YQfG/wlHGhky6FNmpIwgDYDOc/uyivdBv+9S02Z04xY=;
  c=simple/simple; d=jinnrry.com;
@@ -535,11 +588,11 @@ Content-Type: text/html
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(moveEmail)))
+	receiveFixture(t, &s, moveEmail)
 }
 
 func TestQAEmailForward(t *testing.T) {
-	testInit()
+	testInit(t)
 	data := `Mime-Version: 1.0
 X-QQ-MIME: TCMime 1.0 by Tencent
 X-Mailer: QQMail 2.x
@@ -569,5 +622,5 @@ PGRpdj7ov5nph4zmmK/lhoXlrrk8L2Rpdj48ZGl2PjwhLS1lbXB0eXNpZ24tLT48L2Rpdj4=
 		Ctx:           &context.Context{},
 	}
 
-	s.Data(bytes.NewReader([]byte(data)))
+	receiveFixture(t, &s, data)
 }

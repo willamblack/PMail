@@ -29,6 +29,7 @@ func (bkd *Backend) NewSession(conn *smtp.Conn) (smtp.Session, error) {
 
 	return &Session{
 		RemoteAddress: remoteAddress,
+		Helo:          conn.Hostname(),
 		Ctx:           ctx,
 	}, nil
 }
@@ -36,6 +37,7 @@ func (bkd *Backend) NewSession(conn *smtp.Conn) (smtp.Session, error) {
 // A Session is returned after EHLO.
 type Session struct {
 	RemoteAddress net.Addr
+	Helo          string
 	User          string
 	From          string
 	To            []string
@@ -97,7 +99,7 @@ func (s *Session) AuthPlain(username, pwd string) error {
 		s.Ctx.UserName = user.Name
 		s.Ctx.IsAdmin = user.IsAdmin == 1
 
-		log.WithContext(s.Ctx).Debugf("Auth Success %+v", user)
+		log.WithContext(s.Ctx).Debugf("Auth Success user_id=%d", user.ID)
 		return nil
 	}
 

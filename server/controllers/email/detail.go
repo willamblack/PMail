@@ -1,12 +1,10 @@
 package email
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/services/detail"
 	"github.com/Jinnrry/pmail/utils/context"
-	log "github.com/sirupsen/logrus"
-	"io"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"net/http"
 )
 
@@ -15,14 +13,9 @@ type emailDetailRequest struct {
 }
 
 func EmailDetail(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-	}
 	var retData emailDetailRequest
-	err = json.Unmarshal(reqBytes, &retData)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &retData) {
+		return
 	}
 
 	if retData.ID <= 0 {

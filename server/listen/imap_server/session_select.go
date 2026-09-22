@@ -15,12 +15,20 @@ func (s *serverSession) Select(mailbox string, options *imap.SelectOptions) (*im
 		}
 	}
 
-	paths := strings.Split(mailbox, "/")
-	s.currentMailbox = strings.Trim(paths[len(paths)-1], `"`)
+	mailbox = strings.Trim(mailbox, `"`)
+	if !group.IsDefaultBox(mailbox) {
+		mailboxInfo, err := group.GetGroupByFullPath(s.ctx, mailbox)
+		if err != nil || mailboxInfo.ID == 0 {
+			return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "mailbox not found"}
+		}
+	}
+	s.currentMailbox = mailbox
+	s.deleteUidList = nil
+	s.readOnly = options != nil && options.ReadOnly
 	_, data := group.GetGroupStatus(s.ctx, s.currentMailbox, []string{"MESSAGES", "UNSEEN", "UIDNEXT", "UIDVALIDITY"})
 
 	ret := &imap.SelectData{
-		Flags:          []imap.Flag{imap.FlagSeen},
+		Flags:          []imap.Flag{imap.FlagSeen, imap.FlagDeleted},
 		PermanentFlags: []imap.Flag{imap.FlagSeen},
 		NumMessages:    cast.ToUint32(data["MESSAGES"]),
 		UIDNext:        imap.UID(data["UIDNEXT"]),

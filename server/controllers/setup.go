@@ -1,15 +1,14 @@
 package controllers
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/services/setup"
 	"github.com/Jinnrry/pmail/services/setup/ssl"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -19,11 +18,10 @@ func AcmeChallenge(w http.ResponseWriter, r *http.Request) {
 	log.Infof("AcmeChallenge: %s", r.URL.Path)
 	instance := ssl.GetHttpChallengeInstance()
 	token := strings.ReplaceAll(r.URL.Path, "/.well-known/acme-challenge/", "")
-	auth, exist := instance.AuthInfo[token]
+	keyAuth, exist := instance.Lookup(token)
 	if exist {
-		w.Write([]byte(auth.KeyAuth))
+		w.Write([]byte(keyAuth))
 	} else {
-		log.Errorf("AcmeChallenge Error Token Infos:%+v", instance.AuthInfo)
 		http.NotFound(w, r)
 	}
 }
@@ -34,16 +32,8 @@ type sslResponse struct {
 }
 
 func Setup(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		response.NewSuccessResponse("").FPrint(w)
-		return
-	}
-
 	var reqData map[string]string
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		response.NewErrorResponse(response.ServerError, "", err.Error()).FPrint(w)
+	if !httputil.ReadJSON(w, req, &reqData) {
 		return
 	}
 
@@ -162,7 +152,7 @@ func Setup(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		err = ssl.SetSSL(cast.ToString(reqData["ssl_type"]), cast.ToString(reqData["key_path"]), cast.ToString(reqData["crt_path"]))
+		err := ssl.SetSSL(cast.ToString(reqData["ssl_type"]), cast.ToString(reqData["key_path"]), cast.ToString(reqData["crt_path"]))
 		if err != nil {
 			response.NewErrorResponse(response.ServerError, err.Error(), "").FPrint(w)
 			return

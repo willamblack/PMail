@@ -5,7 +5,7 @@ clean:
 
 
 build_fe:
-	cd fe && yarn && yarn build
+	cd fe && yarn install --frozen-lockfile && yarn build
 	rm -rf server/listen/http_server/dist
 	cd server && cp -rf ../fe/dist listen/http_server
 
@@ -45,10 +45,16 @@ package: clean
 	cp README.md output/
 
 test:
-	export setup_port=17888 && cd server && export PMail_ROOT=$(CURDIR)/server/ && go test -v -p 1 ./...
+	cd server && go test -v -p 1 ./...
+
+# Opt-in legacy end-to-end test: isolated data, but binds real mail ports.
+test_integration:
+	cd server && PMAIL_INTEGRATION_TEST=1 go test -v -count=1 .
 
 test_mysql:
-	export setup_port=17888 && cd server && export PMail_ROOT=$(CURDIR)/server/ && go test -args "mysql" -v -p 1 ./...
+	@echo "Legacy MySQL tests reused a fixed database and are disabled. Use isolated SQLite tests with make test."
+	@exit 1
 
 test_postgres:
-	export setup_port=17888 && cd server && export PMail_ROOT=$(CURDIR)/server/ && go test -args "postgres" -v -p 1 ./...
+	@echo "Legacy PostgreSQL tests reused a fixed database and are disabled. Use isolated SQLite tests with make test."
+	@exit 1

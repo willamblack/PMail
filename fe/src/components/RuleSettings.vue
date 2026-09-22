@@ -32,7 +32,7 @@
     </div>
 
     <div class="form-actions">
-      <el-button type="primary" @click="dialogVisible = true" class="add-btn">
+      <el-button type="primary" @click="newRule" class="add-btn">
         <el-icon><Plus /></el-icon> {{ lang.new_rule }}
       </el-button>
     </div>
@@ -113,6 +113,7 @@ import lang from '../i18n/i18n';
 import {Delete, Edit, InfoFilled, Plus} from '@element-plus/icons-vue'
 import {http} from "@/utils/axios";
 import {ElNotification} from "element-plus";
+import {createRuleForm} from "@/utils/ruleForm";
 
 const data = ref([])
 const dialogVisible = ref(false)
@@ -153,14 +154,12 @@ const reflushGroupInfos = function () {
 
 reflushGroupInfos()
 
-const addRuleForm = reactive({
-  "id": 0,
-  "name": "",
-  "sort": 0,
-  "rules": [{"field": "", "type": "", "rule": ""}],
-  "action": "",
-  "params": ""
-})
+const addRuleForm = reactive(createRuleForm())
+
+const newRule = () => {
+  Object.assign(addRuleForm, createRuleForm())
+  dialogVisible.value = true
+}
 
 const delRule = function (id) {
   http.post("/api/rule/del", {"id": id}).then((res) => {
@@ -174,12 +173,7 @@ const delRule = function (id) {
 }
 
 const editRule = function (ruleInfo) {
-  addRuleForm.id = ruleInfo.id
-  addRuleForm.name = ruleInfo.name
-  addRuleForm.rules = ruleInfo.rules || []
-  addRuleForm.action = ruleInfo.action
-  addRuleForm.params = ruleInfo.params
-  addRuleForm.sort = ruleInfo.sort
+  Object.assign(addRuleForm, createRuleForm(ruleInfo))
   dialogVisible.value = true
 }
 
@@ -209,12 +203,7 @@ const submitRule = function () {
     } else {
       init()
       dialogVisible.value = false
-      addRuleForm.id = 0
-      addRuleForm.name = ""
-      addRuleForm.sort = 0
-      addRuleForm.rules = [{"field": "", "type": "", "rule": ""}]
-      addRuleForm.action = ""
-      addRuleForm.params = ""
+      Object.assign(addRuleForm, createRuleForm())
     }
   })
 }

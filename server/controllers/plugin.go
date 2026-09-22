@@ -19,8 +19,12 @@ func GetPluginList(ctx *context.Context, w http.ResponseWriter, req *http.Reques
 }
 
 func SettingsHtml(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	args := strings.Split(req.RequestURI, "/")
-	if len(args) < 4 {
+	if !ctx.IsAdmin {
+		response.NewErrorResponse(response.NoAccessPrivileges, "No Access Privileges", "").FPrint(w)
+		return
+	}
+	args := strings.Split(req.URL.Path, "/")
+	if len(args) < 5 || args[4] == "" {
 		response.NewErrorResponse(response.ParamsError, "404", "").FPrint(w)
 		return
 	}
@@ -42,5 +46,5 @@ func SettingsHtml(ctx *context.Context, w http.ResponseWriter, req *http.Request
 		return
 
 	}
-	response.NewErrorResponse(response.ParamsError, "404", "")
+	response.NewErrorResponse(response.ParamsError, "404", "").FPrint(w)
 }

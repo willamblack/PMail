@@ -1,12 +1,12 @@
-FROM node:lts-alpine as febuild
+FROM node:22-alpine as febuild
 WORKDIR /work
 
 COPY fe .
 
-RUN yarn && yarn build
+RUN yarn install --frozen-lockfile && yarn build
 
 
-FROM golang:alpine as serverbuild
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c as serverbuild
 ARG VERSION
 WORKDIR /work
 COPY . .
@@ -25,10 +25,9 @@ FROM alpine
 WORKDIR /work
 
 # 设置时区
-RUN apk add --no-cache tzdata \
+RUN apk add --no-cache tzdata ca-certificates \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && echo "Asia/Shanghai" > /etc/timezone \
-    &&rm -rf /var/cache/apk/* /tmp/* /var/tmp/* $HOME/.cache
+    && echo "Asia/Shanghai" > /etc/timezone
 
 
 COPY --from=serverbuild /work/server/pmail .
@@ -37,4 +36,4 @@ COPY --from=serverbuild /work/server/hooks/spam_block/output/* ./plugins/
 
 EXPOSE 25 80 110 443 465 587 995 993
 
-CMD /work/pmail
+CMD ["/work/pmail"]

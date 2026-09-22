@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"time"
 
 	"github.com/Jinnrry/pmail/config"
@@ -23,6 +22,7 @@ import (
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/send"
+	smtp "github.com/emersion/go-smtp"
 	"github.com/mileusna/spf"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
@@ -40,7 +40,7 @@ func (s *Session) Data(r io.Reader) error {
 		return err
 	}
 
-	log.WithContext(ctx).Debugf("%s", string(emailData))
+	log.WithContext(ctx).Debugf("Received message bytes=%d", len(emailData))
 
 	log.WithContext(ctx).Debugf("开始执行插件ReceiveParseBefore！")
 	for _, hook := range hooks.AllHooks() {
@@ -52,6 +52,9 @@ func (s *Session) Data(r io.Reader) error {
 	log.WithContext(ctx).Debugf("开始执行插件ReceiveParseBefore End！")
 
 	email := parsemail.NewEmailFromReader(s.To, bytes.NewReader(emailData), len(emailData))
+	if email == nil {
+		return &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 6, 0}, Message: "Malformed message headers"}
+	}
 
 	if s.From != "" {
 		from := parsemail.BuilderUser(s.From)
@@ -67,6 +70,7 @@ func (s *Session) Data(r io.Reader) error {
 
 	// 判断是收信还是转发，只要是登陆了，都当成转发处理
 	if s.Ctx.UserID > 0 {
+		email.EnvelopeTo = append([]string{}, s.To...)
 		if email.From == nil || !s.senderAuthorized(email.From.EmailAddress) {
 			return senderRejectedSMTPError()
 		}
@@ -96,7 +100,7 @@ func (s *Session) Data(r io.Reader) error {
 		// DKIM校验
 		dkimStatus = parsemail.Check(ctx, bytes.NewReader(emailData))
 
-		SPFStatus = spfCheck(s.RemoteAddress.String(), email.Sender, email.Sender.EmailAddress)
+		SPFStatus = spfCheck(s.RemoteAddress.String(), s.From, s.Helo)
 
 		_, formDomain, fromErr := maildomain.SplitAddress(email.From.EmailAddress)
 		_, localSender := maildomain.MatchRoot(formDomain, config.Instance.Domains, config.Instance.AcceptSubdomains)
@@ -238,25 +242,32 @@ func saveEmail(ctx *context.Context, size int, email *parsemail.Email, sendUserI
 	return users, saved, nil
 }
 
-func spfCheck(remoteAddress string, sender *parsemail.User, senderString string) bool {
-	//spf校验
-	ipAddress, _ := netip.ParseAddrPort(remoteAddress)
-
-	ip := net.ParseIP(ipAddress.Addr().String())
-	if ip.IsPrivate() {
-		return true
-	}
-
-	tmp := strings.Split(sender.EmailAddress, "@")
-	if len(tmp) < 2 {
+func spfCheck(remoteAddress, envelopeFrom, helo string) bool {
+	// SPF authenticates MAIL FROM, never the untrusted Sender/From headers.
+	ipAddress, err := netip.ParseAddrPort(remoteAddress)
+	if err != nil {
 		return false
 	}
 
-	res := spf.CheckHost(ip, tmp[1], senderString, "")
-
-	if res == spf.None || res == spf.Pass {
-		// spf校验通过
-		return true
+	ip := net.ParseIP(ipAddress.Addr().String())
+	domain, senderString, ok := spfIdentity(envelopeFrom, helo)
+	if !ok {
+		return false
 	}
-	return false
+
+	res := spf.CheckHost(ip, domain, senderString, helo)
+
+	return res == spf.Pass
+}
+
+func spfIdentity(envelopeFrom, helo string) (domain, sender string, ok bool) {
+	if envelopeFrom == "" {
+		domain, err := maildomain.Normalize(helo)
+		if err != nil {
+			return "", "", false
+		}
+		return domain, "postmaster@" + domain, true
+	}
+	_, domain, err := maildomain.SplitAddress(envelopeFrom)
+	return domain, envelopeFrom, err == nil
 }

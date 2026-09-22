@@ -4,6 +4,7 @@ import (
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	log "github.com/sirupsen/logrus"
+	"sync"
 	"time"
 )
 
@@ -14,13 +15,19 @@ type authInfo struct {
 }
 
 type HttpChallenge struct {
-	AuthInfo map[string]*authInfo
+	mu       sync.RWMutex
+	authInfo map[string]*authInfo
 }
 
-var instance *HttpChallenge
+var instance = &HttpChallenge{authInfo: map[string]*authInfo{}}
 
 func (h *HttpChallenge) Present(domain, token, keyAuth string) error {
-	h.AuthInfo[token] = &authInfo{
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.authInfo == nil {
+		h.authInfo = map[string]*authInfo{}
+	}
+	h.authInfo[token] = &authInfo{
 		Domain:  domain,
 		Token:   token,
 		KeyAuth: keyAuth,
@@ -30,38 +37,46 @@ func (h *HttpChallenge) Present(domain, token, keyAuth string) error {
 }
 
 func (h *HttpChallenge) CleanUp(domain, token, keyAuth string) error {
-	delete(h.AuthInfo, token)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.authInfo, token)
 	return nil
 }
 
 func GetHttpChallengeInstance() *HttpChallenge {
-	if instance == nil {
-		instance = &HttpChallenge{
-			AuthInfo: map[string]*authInfo{},
-		}
-	}
 	return instance
 }
 
-type DNSChallenge struct {
-	AuthInfo map[string]*authInfo
+func (h *HttpChallenge) Lookup(token string) (string, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	info, ok := h.authInfo[token]
+	if !ok {
+		return "", false
+	}
+	return info.KeyAuth, true
 }
 
-var dnsInstance *DNSChallenge
+type DNSChallenge struct {
+	mu       sync.RWMutex
+	authInfo map[string]*authInfo
+}
+
+var dnsInstance = &DNSChallenge{authInfo: map[string]*authInfo{}}
 
 func GetDnsChallengeInstance() *DNSChallenge {
-	if dnsInstance == nil {
-		dnsInstance = &DNSChallenge{
-			AuthInfo: map[string]*authInfo{},
-		}
-	}
 	return dnsInstance
 }
 
 func (h *DNSChallenge) Present(domain, token, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 	log.Infof("Presenting challenge Info : %+v", info)
-	h.AuthInfo[token] = &authInfo{
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.authInfo == nil {
+		h.authInfo = map[string]*authInfo{}
+	}
+	h.authInfo[token] = &authInfo{
 		Domain:  info.FQDN,
 		Token:   token,
 		KeyAuth: info.Value,
@@ -71,7 +86,9 @@ func (h *DNSChallenge) Present(domain, token, keyAuth string) error {
 }
 
 func (h *DNSChallenge) CleanUp(domain, token, keyAuth string) error {
-	delete(h.AuthInfo, token)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.authInfo, token)
 	return nil
 }
 
@@ -89,7 +106,9 @@ type DNSItem struct {
 
 func (h *DNSChallenge) GetDNSSettings(ctx *context.Context) []*DNSItem {
 	ret := []*DNSItem{}
-	for _, info := range h.AuthInfo {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, info := range h.authInfo {
 		ret = append(ret, &DNSItem{
 			Type:  "TXT",
 			Host:  info.Domain,

@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/Jinnrry/pmail/config"
-	"github.com/Jinnrry/pmail/utils/consts"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/emersion/go-msgauth/dkim"
 	log "github.com/sirupsen/logrus"
@@ -53,7 +52,11 @@ func loadPrivateKey(path string) (crypto.Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		return k.(crypto.Signer), nil
+		signer, ok := k.(crypto.Signer)
+		if !ok {
+			return nil, fmt.Errorf("private key does not support signing")
+		}
+		return signer, nil
 	case "RSA PRIVATE KEY":
 		return x509.ParsePKCS1PrivateKey(block.Bytes)
 	case "EDDSA PRIVATE KEY":
@@ -91,6 +94,7 @@ func Check(ctx *context.Context, mail io.Reader) bool {
 	verifications, err := dkim.Verify(mail)
 	if err != nil {
 		log.WithContext(ctx).Warnf("DKIM Error:%v", err)
+		return false
 	}
 
 	if len(verifications) == 0 {
@@ -98,15 +102,12 @@ func Check(ctx *context.Context, mail io.Reader) bool {
 	}
 
 	for _, v := range verifications {
-		if v.Domain == consts.TEST_DOMAIN {
-			return true
-		}
 		if v.Err == nil {
 			log.Println("Valid signature for:", v.Domain)
+			return true
 		} else {
 			log.Println("Invalid signature for:", v.Domain, v.Err)
-			return false
 		}
 	}
-	return true
+	return false
 }

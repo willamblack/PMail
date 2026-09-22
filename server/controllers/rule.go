@@ -1,19 +1,18 @@
 package controllers
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/dto"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/i18n"
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/services/rule"
+	"github.com/Jinnrry/pmail/services/rule/match"
 	"github.com/Jinnrry/pmail/utils/address"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/errors"
-	log "github.com/sirupsen/logrus"
-	"io"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"net/http"
 )
 
@@ -24,16 +23,12 @@ func GetRule(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 
 func UpsertRule(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 
-	requestBody, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("ReadError:%v", err)
+	var data *dto.Rule
+	if !httputil.ReadJSON(w, req, &data) {
 		return
 	}
-
-	var data *dto.Rule
-	err = json.Unmarshal(requestBody, &data)
-	if err != nil {
-		response.NewErrorResponse(response.ParamsError, "params error", err).FPrint(w)
+	if data.Action < dto.READ || data.Action > dto.MOVE {
+		response.NewErrorResponse(response.ParamsError, "Invalid rule action", "").FPrint(w)
 		return
 	}
 
@@ -44,13 +39,20 @@ func UpsertRule(ctx *context.Context, w http.ResponseWriter, req *http.Request) 
 	}
 
 	for _, r := range data.Rules {
-		if !array.InArray(r.Field, []string{"From", "Subject", "To", "Cc", "Text", "Html", "Content"}) {
+		if r == nil || !array.InArray(r.Field, []string{"From", "Subject", "To", "Cc", "Text", "Html", "Content"}) ||
+			!array.InArray(r.Type, []string{match.RuleTypeRegex, match.RuleTypeContains, match.RuleTypeEq}) {
 			response.NewErrorResponse(response.ParamsError, "ParamsError error", "params error! Rule Field Error!").FPrint(w)
 			return
 		}
+		if r.Type == match.RuleTypeRegex {
+			if err := match.ValidateRegex(r.Rule); err != nil {
+				response.NewErrorResponse(response.ParamsError, "Invalid regular expression", "").FPrint(w)
+				return
+			}
+		}
 	}
 
-	err = save(ctx, data.Encode())
+	err := save(ctx, data.Encode())
 	if err != nil {
 		response.NewErrorResponse(response.ServerError, "server error", err).FPrint(w)
 		return
@@ -81,16 +83,8 @@ type delRuleReq struct {
 }
 
 func DelRule(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	requestBody, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("ReadError:%v", err)
-		return
-	}
-
 	var data delRuleReq
-	err = json.Unmarshal(requestBody, &data)
-	if err != nil {
-		response.NewErrorResponse(response.ParamsError, "params error", err).FPrint(w)
+	if !httputil.ReadJSON(w, req, &data) {
 		return
 	}
 
@@ -99,7 +93,7 @@ func DelRule(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	_, err = db.Instance.Exec(db.WithContext(ctx, "delete from rule where id =? and user_id =?"), data.Id, ctx.UserID)
+	_, err := db.Instance.Exec(db.WithContext(ctx, "delete from rule where id =? and user_id =?"), data.Id, ctx.UserID)
 	if err != nil {
 		response.NewErrorResponse(response.ServerError, "unknown error", err).FPrint(w)
 		return

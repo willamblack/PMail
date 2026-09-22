@@ -130,3 +130,30 @@ func TestRecipientSearchRunsOnSQLite(t *testing.T) {
 		t.Fatalf("recipient search count = %d, want 1", count)
 	}
 }
+
+func TestRecipientSearchTreatsWildcardsAsLiteral(t *testing.T) {
+	engine, err := xorm.NewEngine("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = engine.Close() })
+	if _, err := engine.Exec(`create table email ("to" text, cc text, bcc text)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, recipient := range []string{"order_%!@example.com", "order-999@example.com"} {
+		if _, err := engine.Exec(`insert into email ("to", cc, bcc) values (?, '', '')`, recipient); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, keyword := range []string{"order_%!@example.com", "_%!", "!", "_", "%"} {
+		query, params := appendKeywordSearch("select count(*) from email e where 1=1", nil, keyword, "recipient", engine.Quote)
+		var count int64
+		if _, err := engine.SQL(query, params...).Get(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("literal %q count=%d, want 1", keyword, count)
+		}
+	}
+}

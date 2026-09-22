@@ -1,14 +1,12 @@
 package controllers
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/i18n"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"github.com/Jinnrry/pmail/utils/password"
-	log "github.com/sirupsen/logrus"
-	"io"
 	"net/http"
 )
 
@@ -17,14 +15,9 @@ type modifyPasswordRequest struct {
 }
 
 func ModifyPassword(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Errorf("%+v", err)
-	}
 	var retData modifyPasswordRequest
-	err = json.Unmarshal(reqBytes, &retData)
-	if err != nil {
-		log.Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &retData) {
+		return
 	}
 
 	if retData.Password != "" {

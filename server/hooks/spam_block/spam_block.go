@@ -11,14 +11,17 @@ import (
 	"github.com/Jinnrry/pmail/utils/context"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
+	"html"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 type SpamBlock struct {
+	mu  sync.RWMutex
 	cfg SpamBlockConfig
 	hc  *http.Client
 }
@@ -61,7 +64,10 @@ func (s *SpamBlock) SettingsHtml(ctx *context.Context, url string, requestData s
 </div>
 `)
 		}
-		return fmt.Sprintf(index, s.cfg.ApiURL, s.cfg.ApiTimeout, s.cfg.Threshold)
+		s.mu.RLock()
+		cfg := s.cfg
+		s.mu.RUnlock()
+		return fmt.Sprintf(index, html.EscapeString(cfg.ApiURL), cfg.ApiTimeout, cfg.Threshold)
 	}
 	if !ctx.IsAdmin {
 		return "No Access Privileges"
@@ -76,12 +82,18 @@ func (s *SpamBlock) SettingsHtml(ctx *context.Context, url string, requestData s
 	cfg.ApiURL = tempCfg["url"]
 	cfg.Threshold = cast.ToFloat64(tempCfg["threshold"])
 	cfg.ApiTimeout = cast.ToInt(tempCfg["timeout"])
+	if cfg.ApiTimeout <= 0 || cfg.ApiTimeout > 30000 || cfg.Threshold < 0 || cfg.Threshold > 100 {
+		return "invalid timeout or threshold"
+	}
 	err = saveConfig(cfg)
 	if err != nil {
 		return err.Error()
 	}
 
+	s.mu.Lock()
 	s.cfg = cfg
+	s.hc = &http.Client{Timeout: time.Duration(cfg.ApiTimeout) * time.Millisecond}
+	s.mu.Unlock()
 
 	return "success"
 
@@ -100,8 +112,10 @@ type InstanceItem struct {
 }
 
 func (s *SpamBlock) ReceiveParseAfter(ctx *context.Context, email *parsemail.Email) {
-
-	if s.cfg.ApiURL == "" {
+	s.mu.RLock()
+	cfg, client := s.cfg, s.hc
+	s.mu.RUnlock()
+	if cfg.ApiURL == "" || client == nil {
 		return
 	}
 
@@ -122,13 +136,14 @@ func (s *SpamBlock) ReceiveParseAfter(ctx *context.Context, email *parsemail.Ema
 
 	str, _ := json.Marshal(reqData)
 
-	resp, err := s.hc.Post(s.cfg.ApiURL, "application/json", strings.NewReader(string(str)))
+	resp, err := client.Post(cfg.ApiURL, "application/json", strings.NewReader(string(str)))
 	if err != nil {
 		log.Errorf("API Error: %v", err)
 		return
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 
 	modelResponse := ModelResponse{}
 	err = json.Unmarshal(body, &modelResponse)
@@ -164,7 +179,7 @@ func (s *SpamBlock) ReceiveParseAfter(ctx *context.Context, email *parsemail.Ema
 		log.WithContext(ctx).Infof("[Spam Check Result: %f Blackmail ] %s", maxScore, email.Subject)
 	}
 
-	if maxClass != 0 && maxScore > s.cfg.Threshold/100 {
+	if maxClass != 0 && maxScore > cfg.Threshold/100 {
 		if maxClass == 2 {
 			email.Status = 3
 		} else {

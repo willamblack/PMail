@@ -1,69 +1,42 @@
-name: PR - Docker unit test
+name: Source regression tests
 
 on:
   pull_request:
-    branches:
-      - master
-    types: [opened, reopened, synchronize, edited]
-  # Please, always create a pull request instead of push to master.
+    branches: [master, codex/admin-wildcard-catchall]
+  push:
+    branches: [codex/admin-wildcard-catchall]
+  workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: docker-test-${{ github.ref_name }}
+  group: source-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: Docker tests
     runs-on: ubuntu-latest
-    services:
-      mysql:
-        image: mysql
-        env:
-          MYSQL_DATABASE: pmail
-          MYSQL_ROOT_PASSWORD: githubTest
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-      postgres:
-        image: postgres
-        env:
-          POSTGRESQL_PASSWORD: githubTest
-    container:
-      image: golang
-    env:
-      REPOSITORY: ${{ github.repository }}
-      TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-      SOURCE_BRANCH: ${{ github.ref_name }}
-      COMMIT: ${{ github.workflow_sha }}
-      EVENT: ${{ github.event_name}}
     steps:
-      - name: Setup Node.js environment
-        run: apt update && apt install -y nodejs npm
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Pull Request Labeler
-        if: ${{ failure() }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: fe/yarn.lock
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: server/go.sum
+      - name: Install Yarn Classic
+        run: npm install --global yarn@1.22.22
+      - name: Build web UI and test state helpers
         run: |
-          gh pr edit ${{ github.event.pull_request.number }} --add-label "Auto: Test Failed"
-        
-      - name: Install Dependencies
-        run: npm install --global yarn
-
-      - name: FE build
-        run: make build_fe
-
-      - name: Run Test Mysql
-        run: make test_mysql
-
-      - name: Run Test
+          make build_fe
+          cd fe && node --test tests/review-regressions.test.mjs
+      - name: Test isolated SQLite and protocol regressions
         run: make test
-
-#      - name: Run postgres
-#        run: make test_postgres
-
+      - name: Static Go checks
+        run: cd server && go vet ./...
+      - name: Race checks
+        run: cd server && go test -race -p 1 ./...

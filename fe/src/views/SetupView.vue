@@ -104,7 +104,7 @@
                           </el-button>
                         </span>
             <el-input :placeholder="'domain' + i + '.com'" v-for="(item, i) in domainSettings.multi_domain "
-                      v-model="domainSettings.multi_domain[i]" :key="item"></el-input>
+                      v-model="domainSettings.multi_domain[i]" :key="i"></el-input>
           </el-form-item>
 
 
@@ -158,7 +158,7 @@
     </div>
 
     <el-alert :closable="false" title="Warning!" type="error" center
-              v-if="active === 5 && sslSettings.type === 0 && port !== 80" :description="lang.autoSSLWarn"/>
+              v-if="active === 5 && sslSettings.type === '0' && sslSettings.challenge === 'http' && Number(port) !== 80" :description="lang.autoSSLWarn"/>
 
     <div v-if="active === 5" class="ctn">
       <div class="desc">
@@ -234,12 +234,13 @@
 </template>
 
 <script setup>
-import {reactive, ref} from 'vue'
+import {onUnmounted, reactive, ref} from 'vue'
 import {ElMessage} from 'element-plus'
 import lang from '../i18n/i18n';
 import axios from 'axios'
 import {Plus} from '@element-plus/icons-vue'
 import {http} from "@/utils/axios";
+import {isDNSChallenge, sslTypeForRequest} from "@/utils/setup";
 
 const waitDesc = ref(lang.wait_desc);
 
@@ -278,10 +279,19 @@ const dnsChecking = ref(false)
 const dnsInfos = ref({})
 
 const port = ref(80)
+let disposed = false
+let statusTimer
+let dnsTimer
+
+onUnmounted(() => {
+  disposed = true
+  window.clearTimeout(statusTimer)
+  window.clearTimeout(dnsTimer)
+})
 
 
 const addDomain = () => {
-  domainSettings.multi_domain.push([])
+  domainSettings.multi_domain.push("")
 }
 
 const setPassword = () => {
@@ -389,7 +399,7 @@ const getSSLConfig = () => {
     if (res.errorNo !== 0) {
       ElMessage.error(res.errorMsg)
     } else {
-      sslSettings.type = res.data.type
+      sslSettings.type = String(res.data.type)
       if (sslSettings.type === "2") {
         sslSettings.type = "0"
         sslSettings.challenge = "dns"
@@ -405,10 +415,7 @@ const getSSLConfig = () => {
 const setSSLConfig = () => {
   fullscreenLoading.value = true;
 
-  let sslType = sslSettings.type;
-  if (sslType === "0" && sslSettings.challenge === "dns") {
-    sslType = "2"
-  }
+  const sslType = sslTypeForRequest(sslSettings.type, sslSettings.challenge);
 
 
   http.post("/api/setup", {
@@ -422,32 +429,34 @@ const setSSLConfig = () => {
       fullscreenLoading.value = false;
       ElMessage.error(res.errorMsg)
     } else {
-      if (sslType === 2) {
+      if (isDNSChallenge(sslType)) {
         fullscreenLoading.value = false;
         dnsChecking.value = true;
         getSSLDNSParams();
       }
       checkStatus();
     }
+  }).catch(() => {
+    fullscreenLoading.value = false;
+    ElMessage.error(lang.load_failed)
   })
 }
 
 
 const checkStatus = () => {
+  if (disposed) return
   axios.post("/api/ping", {}).then((res) => {
+    if (disposed) return
     if (res.data.errorNo !== 0) {
-      setTimeout(function () {
+      statusTimer = window.setTimeout(function () {
         checkStatus()
       }, 1000);
     } else {
-      if (sslSettings.type === 1) {
-        window.location.href = "http://" + domainSettings.web_domain;
-      } else {
-        window.location.href = "https://" + domainSettings.web_domain;
-      }
+      window.location.href = "https://" + domainSettings.web_domain;
     }
   }).catch(() => {
-    setTimeout(function () {
+    if (disposed) return
+    statusTimer = window.setTimeout(function () {
       checkStatus()
     }, 1000);
   })
@@ -471,23 +480,22 @@ const setDomainConfig = () => {
   })
 }
 
-const getSSLDNSParams = () => {
-  http.post("/api/setup", {"action": "getParams", "step": "ssl"}).then((res) => {
-    if (res.errorNo !== 0) {
-      ElMessage.error(res.errorMsg)
-    } else {
+const getSSLDNSParams = async () => {
+  if (disposed) return
+  try {
+    const res = await http.post("/api/setup", {"action": "getParams", "step": "ssl"})
+    if (!disposed && res.errorNo === 0 && Array.isArray(res.data)) {
       sslSettings.paramsList = res.data
-      console.log(sslSettings.paramsList)
     }
-  })
-
-  if (sslSettings.paramsList.length === 0) {
-    setTimeout(function () {
-      getSSLDNSParams()
-    }, 1000);
+  } catch {
+    // The server restarts when setup completes; status polling handles that.
+  } finally {
+    // ACME may present multiple hostname challenges sequentially. Keep the
+    // visible TXT records current until setup completes or this view closes.
+    if (!disposed && dnsChecking.value) {
+      dnsTimer = window.setTimeout(getSSLDNSParams, 2000)
+    }
   }
-
-
 }
 
 

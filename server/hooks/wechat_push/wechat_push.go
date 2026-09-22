@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -35,6 +36,7 @@ type accessTokenRes struct {
 }
 
 type WeChatPushHook struct {
+	tokenMu      sync.Mutex
 	appId        string
 	secret       string
 	token        string
@@ -113,10 +115,12 @@ func (w *WeChatPushHook) ReceiveParseBefore(ctx *context.Context, email *[]byte)
 func (w *WeChatPushHook) ReceiveParseAfter(ctx *context.Context, email *parsemail.Email) {}
 
 func (w *WeChatPushHook) getWxAccessToken() string {
+	w.tokenMu.Lock()
+	defer w.tokenMu.Unlock()
 	if w.tokenExpires > time.Now().Unix() {
 		return w.token
 	}
-	resp, err := http.Get(fmt.Sprintf("https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=%s&secret=%s", w.appId, w.secret))
+	resp, err := wechatClient.Get(fmt.Sprintf("https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=%s&secret=%s", w.appId, w.secret))
 	if err != nil {
 		return ""
 	}
@@ -145,6 +149,8 @@ type DataItem struct {
 	Color string `json:"color"`
 }
 
+var wechatClient = &http.Client{Timeout: 10 * time.Second}
+
 func (w *WeChatPushHook) sendUserMsg(ctx *context.Context, userId string, content string) {
 
 	url := w.mainConfig.WebDomain
@@ -161,10 +167,13 @@ func (w *WeChatPushHook) sendUserMsg(ctx *context.Context, userId string, conten
 		Data:        SendData{Content: DataItem{Value: content, Color: "#000000"}},
 	})
 
-	_, err := http.Post("https://api.weixin.qq.com/cgi-bin/message/template/send?access_token="+w.getWxAccessToken(), "application/json", strings.NewReader(string(sendMsgReq)))
+	resp, err := wechatClient.Post("https://api.weixin.qq.com/cgi-bin/message/template/send?access_token="+w.getWxAccessToken(), "application/json", strings.NewReader(string(sendMsgReq)))
 	if err != nil {
-		log.WithContext(ctx).Errorf("wechat push error %+v", err)
+		log.WithContext(ctx).Error("wechat push request failed")
+		return
 	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 }
 

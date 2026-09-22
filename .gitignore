@@ -5,5 +5,9 @@ output
 pmail.db
 server/plugins
 config
+# Keep configuration source/tests visible while ignoring new runtime secrets.
+!server/config/
+server/config/*
+!server/config/*.go
 *_KEY
 AURORA_SECRET

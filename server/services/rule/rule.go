@@ -10,6 +10,7 @@ import (
 	"github.com/Jinnrry/pmail/dto"
 	"github.com/Jinnrry/pmail/dto/parsemail"
 	"github.com/Jinnrry/pmail/models"
+	"github.com/Jinnrry/pmail/services/group"
 	"github.com/Jinnrry/pmail/services/rule/match"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/maildomain"
@@ -39,8 +40,13 @@ func GetAllRules(ctx *context.Context, userId int) []*dto.Rule {
 }
 
 func MatchRule(ctx *context.Context, rule *dto.Rule, email *parsemail.Email) bool {
-
+	if rule == nil || email == nil {
+		return false
+	}
 	for _, r := range rule.Rules {
+		if r == nil {
+			return false
+		}
 		var m match.Match
 
 		switch r.Type {
@@ -52,7 +58,7 @@ func MatchRule(ctx *context.Context, rule *dto.Rule, email *parsemail.Email) boo
 			m = match.NewEqualMatch(r.Field, r.Rule)
 		}
 		if m == nil {
-			continue
+			return false
 		}
 
 		if !m.Match(ctx, email) {
@@ -161,60 +167,18 @@ func isLocalDomain(domain string) bool {
 }
 
 func doMove(ctx *context.Context, rule *dto.Rule, email *parsemail.Email, user *models.User) {
-
-	groupId := cast.ToInt(rule.Params)
-	switch groupId {
-	case models.INBOX:
-		_, err := db.Instance.Table(&models.Email{}).Where("id=?", email.MessageId).
-			Cols("type").Update(map[string]interface{}{"type": consts.EmailTypeReceive})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-
-		_, err = db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).
-			Cols("group_id", "status").Update(map[string]interface{}{"group_id": 0, "status": 0})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-	case models.Sent:
-		_, err := db.Instance.Table(&models.Email{}).Where("id=?", email.MessageId).
-			Cols("type").Update(map[string]interface{}{"type": consts.EmailTypeSend})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-
-		_, err = db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).
-			Cols("group_id", "status").Update(map[string]interface{}{"group_id": 0, "status": 0})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-
-	case models.Drafts:
-		_, err := db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).
-			Cols("group_id", "status").Update(map[string]interface{}{"group_id": 0, "status": consts.EmailStatusDrafts})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-
-	case models.Deleted:
-		_, err := db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).
-			Cols("group_id", "status").Update(map[string]interface{}{"group_id": 0, "status": consts.EmailStatusDel})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-	case models.Junk:
-		_, err := db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).
-			Cols("group_id", "status").Update(map[string]interface{}{"group_id": 0, "status": consts.EmailStatusJunk})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
-
-	default:
-
-		_, err := db.Instance.Table(&models.UserEmail{}).Where("email_id=? and user_id=?", email.MessageId, rule.UserId).Cols("group_id").Update(map[string]interface{}{"group_id": groupId})
-		if err != nil {
-			log.WithContext(ctx).Errorf("sqlERror :%v", err)
-		}
+	if ctx == nil || rule == nil || email == nil || user == nil || user.ID <= 0 || user.ID != rule.UserId {
+		return
 	}
-
+	// A rule owns its user_email relationships, not the shared Email record.
+	ownerCtx := *ctx
+	ownerCtx.UserID = user.ID
+	target := cast.ToInt(rule.Params)
+	if name, ok := models.GroupCodeToName[target]; ok {
+		if err := group.Move2DefaultBox(&ownerCtx, []int{cast.ToInt(email.MessageId)}, name); err != nil {
+			log.WithContext(ctx).Errorf("rule mailbox move failed: %v", err)
+		}
+	} else if !group.MoveMailToGroup(&ownerCtx, []int{cast.ToInt(email.MessageId)}, target) {
+		log.WithContext(ctx).Warn("rule destination group missing or not owned by user")
+	}
 }

@@ -38,7 +38,11 @@ func GetDNSSettings(ctx *context.Context) (map[string][]*DNSItem, error) {
 		lang = ctx.Lang
 	}
 
-	return buildDNSSettings(configData, serviceHostname, ip.GetIp(), auth.DkimGen(), lang), nil
+	publicKey, err := auth.DkimGen(configData.DkimPrivateKeyPath)
+	if err != nil {
+		return nil, errors.Wrap(err)
+	}
+	return buildDNSSettings(configData, serviceHostname, ip.GetIp(), publicKey, lang), nil
 }
 
 func canonicalServiceHostname(configData *config.Config) (string, error) {

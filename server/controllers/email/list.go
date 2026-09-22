@@ -7,9 +7,8 @@ import (
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/services/list"
 	"github.com/Jinnrry/pmail/utils/context"
-	log "github.com/sirupsen/logrus"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"github.com/spf13/cast"
-	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -48,25 +47,17 @@ type emailRequest struct {
 }
 
 func EmailList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	var lst []*emilItem
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-	}
+	lst := make([]*emilItem, 0)
 	var retData emailRequest
-	err = json.Unmarshal(reqBytes, &retData)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &retData) {
+		return
 	}
-
-	offset := 0
-	if retData.CurrentPage >= 1 {
-		offset = (retData.CurrentPage - 1) * retData.PageSize
+	page, limit, offset, ok := httputil.Pagination(retData.CurrentPage, retData.PageSize)
+	if !ok {
+		response.NewErrorResponse(response.ParamsError, "Invalid pagination", "").FPrint(w)
+		return
 	}
-
-	if retData.PageSize == 0 {
-		retData.PageSize = 15
-	}
+	retData.CurrentPage, retData.PageSize = page, limit
 
 	var tagInfo dto.SearchTag = dto.SearchTag{
 		Type:    -1,

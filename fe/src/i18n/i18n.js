@@ -137,7 +137,9 @@ const enUS = {
     "chinese": "Chinese",
     "english": "English",
     "search_all": "All fields",
-    "search_recipient": "Recipient"
+    "search_recipient": "Recipient",
+    "load_failed": "Unable to load mail. Please try again.",
+    "retry": "Retry"
 };
 
 
@@ -280,7 +282,9 @@ const zhCN = {
     "chinese": "中文",
     "english": "English",
     "search_all": "全部",
-    "search_recipient": "收件人"
+    "search_recipient": "收件人",
+    "load_failed": "邮件加载失败，请重试。",
+    "retry": "重试"
 }
 
 const languageStorageKey = "pmail-language";

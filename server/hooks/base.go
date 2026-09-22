@@ -86,11 +86,13 @@ func (h *HookSender) ReceiveSaveAfter(ctx *context.Context, email *parsemail.Ema
 	}
 	body, _ := json.Marshal(dto)
 
-	_, err := h.httpc.Post("http://unix/ReceiveSaveAfter", "application/json", strings.NewReader(string(body)))
+	ret, err := h.httpc.Post("http://unix/ReceiveSaveAfter", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		log.WithContext(ctx).Errorf("[%s] Error! %v", h.name, err)
 		return
 	}
+	defer ret.Body.Close()
+	_, _ = io.Copy(io.Discard, ret.Body)
 
 	log.WithContext(ctx).Debugf("[%s]Plugin ReceiveSaveAfter End", h.name)
 }
@@ -110,6 +112,7 @@ func (h *HookSender) SendBefore(ctx *context.Context, email *parsemail.Email) {
 		return
 	}
 
+	defer ret.Body.Close()
 	body, _ = io.ReadAll(ret.Body)
 	json.Unmarshal(body, &dto)
 
@@ -128,13 +131,15 @@ func (h *HookSender) SendAfter(ctx *context.Context, email *parsemail.Email, err
 	}
 	body, _ := json.Marshal(dto)
 
-	_, errL := h.httpc.Post("http://unix/SendAfter", "application/json", strings.NewReader(string(body)))
+	ret, errL := h.httpc.Post("http://unix/SendAfter", "application/json", strings.NewReader(string(body)))
 	if errL != nil {
 		log.WithContext(ctx).Errorf("[%s] Error! %v", h.name, errL)
 		return
 	}
 
 	log.WithContext(ctx).Debugf("[%s]Plugin SendAfter End", h.name)
+	defer ret.Body.Close()
+	_, _ = io.Copy(io.Discard, ret.Body)
 
 }
 
@@ -153,6 +158,7 @@ func (h *HookSender) ReceiveParseBefore(ctx *context.Context, email *[]byte) {
 		return
 	}
 
+	defer ret.Body.Close()
 	body, _ = io.ReadAll(ret.Body)
 	json.Unmarshal(body, &dto)
 
@@ -177,6 +183,7 @@ func (h *HookSender) ReceiveParseAfter(ctx *context.Context, email *parsemail.Em
 		return
 	}
 
+	defer ret.Body.Close()
 	body, _ = io.ReadAll(ret.Body)
 	json.Unmarshal(body, &dto)
 
@@ -200,6 +207,7 @@ func (h *HookSender) GetName(ctx *context.Context) string {
 		return ""
 	}
 
+	defer ret.Body.Close()
 	body, _ = io.ReadAll(ret.Body)
 
 	return string(body)
@@ -221,6 +229,7 @@ func (h *HookSender) SettingsHtml(ctx *context.Context, url string, requestData 
 		return ""
 	}
 
+	defer ret.Body.Close()
 	body, _ = io.ReadAll(ret.Body)
 
 	return string(body)

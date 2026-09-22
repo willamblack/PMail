@@ -13,6 +13,8 @@ import (
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/errors"
 	log "github.com/sirupsen/logrus"
+	"html"
+	"net/url"
 	"strings"
 )
 import . "xorm.io/builder"
@@ -22,7 +24,7 @@ func GetEmailDetail(ctx *context.Context, id int, markRead bool) (*response.Emai
 	var ue models.UserEmail
 	_, err := db.Instance.Where("email_id = ? AND user_id = ?", id, ctx.UserID).Get(&ue)
 	if err != nil {
-		log.Error(err)
+		return nil, err
 	}
 	if ue.ID == 0 && !ctx.IsAdmin {
 		return nil, errors.New("Not authorized")
@@ -30,17 +32,20 @@ func GetEmailDetail(ctx *context.Context, id int, markRead bool) (*response.Emai
 
 	//获取邮件内容
 	var email response.EmailResponseData
-	_, err = db.Instance.Select("*,1 as is_read").Table("email").Where("id=?", id).Get(&email)
+	found, err := db.Instance.Select("*,1 as is_read").Table("email").Where("id=?", id).Get(&email)
 	if err != nil {
 		log.WithContext(ctx).Errorf("SQL error:%+v", err)
 		return nil, err
 	}
+	if !found {
+		return nil, errors.New("Email not found")
+	}
 
 	email.IsRead = ue.IsRead
 
-	if markRead && ue.IsRead == 0 {
+	if markRead && ue.ID > 0 && ue.IsRead == 0 {
 		ue.IsRead = 1
-		_, err = db.Instance.Where("id=?", ue.ID).Update(&ue)
+		_, err = db.Instance.Where("id=?", ue.ID).Cols("is_read").Update(&ue)
 		if err != nil {
 			log.WithContext(ctx).Errorf("SQL error:%+v", err)
 		}
@@ -51,11 +56,17 @@ func GetEmailDetail(ctx *context.Context, id int, markRead bool) (*response.Emai
 		var atts []parsemail.Attachment
 		_ = json.Unmarshal([]byte(email.Attachments), &atts)
 		for _, att := range atts {
+			if att.ContentID == "" {
+				continue
+			}
 			email.Html = sql.NullString{
-				String: strings.ReplaceAll(email.Html.String, fmt.Sprintf("cid:%s", att.ContentID), fmt.Sprintf("/attachments/%d/%s", id, att.ContentID)),
+				String: strings.ReplaceAll(email.Html.String, fmt.Sprintf("cid:%s", att.ContentID), html.EscapeString(fmt.Sprintf("/attachments/%d/%s", id, url.PathEscape(att.ContentID)))),
+				Valid:  email.Html.Valid,
 			}
 		}
 	}
+	// Also cover outgoing, imported and pre-existing rows, not only SMTP input.
+	email.Html.String = parsemail.SanitizeHTMLForDisplay(email.Html.String)
 
 	return &email, nil
 }

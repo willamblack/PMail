@@ -2,6 +2,8 @@
 
 本文适用于本仓库的 `codex/admin-wildcard-catchall` 版本，目标是：多个根域、任意层级子域、任意合法 local-part，统一投递给一个管理员账号。
 
+源码审查与升级兼容说明见 [本轮审计报告](AUDIT_2026-09-21_CN.md)。此次修复不迁移数据库、不重建邮箱、不更换既有 DKIM 私钥；升级后需要重新登录。SMTP 587 必须先 STARTTLS 再认证；POP3 仅推荐 995，不要使用存在旧协议问题的 110/STLS。
+
 ## 1. 为什么容器配置目录是 `/work/config`
 
 `server/config` 是源码树中的目录，其中既有 Go 源码，也有开发和数据库样例。镜像构建完成后，最终运行层不会保留这棵源码目录：
@@ -209,10 +211,12 @@ shop                 TXT     "v=spf1 mx ~all"
 
 ## 9. 修改和启动前检查
 
-先备份整个目录，尤其是 SQLite 和私钥：
+先暂停写入，再备份整个目录，尤其是 SQLite、其 WAL 文件和私钥。下面会短暂停止邮件服务；确认容器名称为 `pmail`，且目标备份目录尚不存在：
 
 ```bash
-cp -a /www/wwwroot/mail.117799.xyz/config /www/wwwroot/mail.117799.xyz/config.backup
+docker stop pmail
+cp -a /www/wwwroot/mail.117799.xyz/config /www/wwwroot/mail.117799.xyz/config.backup-before-audit
+docker start pmail
 ```
 
 检查 JSON 语法、挂载和日志：

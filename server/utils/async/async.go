@@ -12,7 +12,8 @@ import (
 type Callback func(params any)
 
 type Async struct {
-	wg        *sync.WaitGroup
+	wg        sync.WaitGroup
+	errMu     sync.Mutex
 	lastError error
 	ctx       *context.Context
 }
@@ -24,36 +25,37 @@ func New(ctx *context.Context) *Async {
 }
 
 func (as *Async) LastError() error {
+	as.errMu.Lock()
+	defer as.errMu.Unlock()
 	return as.lastError
 }
 
 func (as *Async) WaitProcess(callback Callback, params any) {
-	if as.wg == nil {
-		as.wg = &sync.WaitGroup{}
-	}
 	as.wg.Add(1)
-	as.Process(func(params any) {
-		defer as.wg.Done()
-		callback(params)
-	}, params)
-}
-
-func (as *Async) Process(callback Callback, params any) {
 	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				as.lastError = as.HandleErrRecover(err)
-			}
-		}()
-		callback(params)
+		defer as.wg.Done()
+		as.run(callback, params)
 	}()
 }
 
+func (as *Async) Process(callback Callback, params any) {
+	go as.run(callback, params)
+}
+
 func (as *Async) Wait() {
-	if as.wg == nil {
-		return
-	}
 	as.wg.Wait()
+}
+
+func (as *Async) run(callback Callback, params any) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err := as.HandleErrRecover(recovered)
+			as.errMu.Lock()
+			as.lastError = err
+			as.errMu.Unlock()
+		}
+	}()
+	callback(params)
 }
 
 // HandleErrRecover panic恢复处理

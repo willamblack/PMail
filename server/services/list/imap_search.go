@@ -72,27 +72,26 @@ func SearchEmails(ctx *context.Context, groupName string, criteria *imap.SearchC
 		return baseList, nil
 	}
 
-	// Build UID to sequence number mapping
-	uidToSeq := make(map[int]int)
-	seqToUID := make(map[int]int)
-	for _, item := range baseList {
-		uidToSeq[item.ID] = item.SerialNumber
-		seqToUID[item.SerialNumber] = item.ID
-	}
+	maxUID := imap.UID(baseList[len(baseList)-1].ID)
+	maxSeq := uint32(baseList[len(baseList)-1].SerialNumber)
 
 	// Filter by UID sets
 	if len(criteria.UID) > 0 {
-		baseList = filterByUIDSets(baseList, criteria.UID)
+		baseList = filterByUIDSets(baseList, criteria.UID, maxUID)
 	}
 
 	// Filter by sequence number sets
 	if len(criteria.SeqNum) > 0 {
-		baseList = filterBySeqNumSets(baseList, criteria.SeqNum)
+		baseList = filterBySeqNumSets(baseList, criteria.SeqNum, maxSeq)
 	}
 
 	// For more complex filters, we need to fetch email data
 	if needsEmailData(criteria) {
-		baseList = filterWithEmailData(ctx, baseList, criteria)
+		var err error
+		baseList, err = filterWithEmailData(ctx, baseList, criteria)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Filter by flags (is_read status in this implementation)
@@ -103,13 +102,21 @@ func SearchEmails(ctx *context.Context, groupName string, criteria *imap.SearchC
 	// Handle NOT criteria
 	if len(criteria.Not) > 0 {
 		for _, notCriteria := range criteria.Not {
-			baseList = applyNotCriteria(ctx, groupName, baseList, &notCriteria)
+			var err error
+			baseList, err = applyNotCriteria(ctx, groupName, baseList, &notCriteria)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	// Handle OR criteria
 	if len(criteria.Or) > 0 {
-		baseList = applyOrCriteria(ctx, groupName, baseList, criteria.Or)
+		var err error
+		baseList, err = applyOrCriteria(ctx, groupName, baseList, criteria.Or)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return baseList, nil
@@ -148,28 +155,60 @@ func needsEmailData(criteria *imap.SearchCriteria) bool {
 }
 
 // filterByUIDSets filters the list by UID sets
-func filterByUIDSets(list []*response.UserEmailUIDData, uidSets []imap.UIDSet) []*response.UserEmailUIDData {
+func filterByUIDSets(list []*response.UserEmailUIDData, uidSets []imap.UIDSet, maximum imap.UID) []*response.UserEmailUIDData {
 	var result []*response.UserEmailUIDData
 	for _, item := range list {
+		matches := true
 		for _, uidSet := range uidSets {
-			if uidSet.Contains(imap.UID(item.ID)) {
-				result = append(result, item)
+			normalized := append(imap.UIDSet(nil), uidSet...)
+			for i := range normalized {
+				if normalized[i].Start == 0 {
+					normalized[i].Start = maximum
+				}
+				if normalized[i].Stop == 0 {
+					normalized[i].Stop = maximum
+				}
+				if normalized[i].Start > normalized[i].Stop {
+					normalized[i].Start, normalized[i].Stop = normalized[i].Stop, normalized[i].Start
+				}
+			}
+			if !normalized.Contains(imap.UID(item.ID)) {
+				matches = false
 				break
 			}
+		}
+		if matches {
+			result = append(result, item)
 		}
 	}
 	return result
 }
 
 // filterBySeqNumSets filters the list by sequence number sets
-func filterBySeqNumSets(list []*response.UserEmailUIDData, seqSets []imap.SeqSet) []*response.UserEmailUIDData {
+func filterBySeqNumSets(list []*response.UserEmailUIDData, seqSets []imap.SeqSet, maximum uint32) []*response.UserEmailUIDData {
 	var result []*response.UserEmailUIDData
 	for _, item := range list {
+		matches := true
 		for _, seqSet := range seqSets {
-			if seqSet.Contains(uint32(item.SerialNumber)) {
-				result = append(result, item)
+			normalized := append(imap.SeqSet(nil), seqSet...)
+			for i := range normalized {
+				if normalized[i].Start == 0 {
+					normalized[i].Start = maximum
+				}
+				if normalized[i].Stop == 0 {
+					normalized[i].Stop = maximum
+				}
+				if normalized[i].Start > normalized[i].Stop {
+					normalized[i].Start, normalized[i].Stop = normalized[i].Stop, normalized[i].Start
+				}
+			}
+			if !normalized.Contains(uint32(item.SerialNumber)) {
+				matches = false
 				break
 			}
+		}
+		if matches {
+			result = append(result, item)
 		}
 	}
 	return result
@@ -226,9 +265,9 @@ func hasFlag(item *response.UserEmailUIDData, flag imap.Flag) bool {
 }
 
 // filterWithEmailData loads email data and applies filters that need it
-func filterWithEmailData(ctx *context.Context, list []*response.UserEmailUIDData, criteria *imap.SearchCriteria) []*response.UserEmailUIDData {
+func filterWithEmailData(ctx *context.Context, list []*response.UserEmailUIDData, criteria *imap.SearchCriteria) ([]*response.UserEmailUIDData, error) {
 	if len(list) == 0 {
-		return list
+		return list, nil
 	}
 
 	// Get email IDs
@@ -244,7 +283,7 @@ func filterWithEmailData(ctx *context.Context, list []*response.UserEmailUIDData
 	err := db.Instance.Table("email").In("id", emailIDs).Find(&emails)
 	if err != nil {
 		log.WithContext(ctx).Errorf("Failed to fetch emails for search: %v", err)
-		return list
+		return nil, err
 	}
 
 	// Build email map
@@ -266,7 +305,7 @@ func filterWithEmailData(ctx *context.Context, list []*response.UserEmailUIDData
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // matchesEmailCriteria checks if an email matches the search criteria
@@ -409,67 +448,45 @@ func matchesText(email *models.Email, pattern string) bool {
 }
 
 // applyNotCriteria applies NOT criteria
-func applyNotCriteria(ctx *context.Context, groupName string, list []*response.UserEmailUIDData, notCriteria *imap.SearchCriteria) []*response.UserEmailUIDData {
-	// Get the list of items that match the NOT criteria
-	matchedList, _ := SearchEmails(ctx, groupName, notCriteria)
-
-	// Build a set of matched UIDs
-	matchedUIDs := make(map[int]bool)
-	for _, item := range matchedList {
-		matchedUIDs[item.ID] = true
+func applyNotCriteria(ctx *context.Context, groupName string, list []*response.UserEmailUIDData, notCriteria *imap.SearchCriteria) ([]*response.UserEmailUIDData, error) {
+	matched, err := SearchEmails(ctx, groupName, notCriteria)
+	if err != nil {
+		return nil, err
 	}
-
-	// Return items that are NOT in the matched set
+	ids := map[int]bool{}
+	for _, row := range matched {
+		ids[row.ID] = true
+	}
 	var result []*response.UserEmailUIDData
-	for _, item := range list {
-		if !matchedUIDs[item.ID] {
-			result = append(result, item)
+	for _, row := range list {
+		if !ids[row.ID] {
+			result = append(result, row)
 		}
 	}
-
-	return result
+	return result, nil
 }
 
 // applyOrCriteria applies OR criteria
-func applyOrCriteria(ctx *context.Context, groupName string, list []*response.UserEmailUIDData, orCriteria [][2]imap.SearchCriteria) []*response.UserEmailUIDData {
-	if len(orCriteria) == 0 {
-		return list
-	}
-
-	// Build a set of current UIDs for intersection
-	currentUIDs := make(map[int]bool)
-	for _, item := range list {
-		currentUIDs[item.ID] = true
-	}
-
-	// For each OR pair, find items matching either condition
-	resultUIDs := make(map[int]bool)
-
+func applyOrCriteria(ctx *context.Context, groupName string, list []*response.UserEmailUIDData, orCriteria [][2]imap.SearchCriteria) ([]*response.UserEmailUIDData, error) {
+	// Each OR pair is a search key; adjacent keys are ANDed together.
 	for _, pair := range orCriteria {
-		// Get matches for first condition
-		matches1, _ := SearchEmails(ctx, groupName, &pair[0])
-		for _, item := range matches1 {
-			if currentUIDs[item.ID] {
-				resultUIDs[item.ID] = true
+		ids := map[int]bool{}
+		for _, criteria := range pair {
+			matched, err := SearchEmails(ctx, groupName, &criteria)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range matched {
+				ids[row.ID] = true
 			}
 		}
-
-		// Get matches for second condition
-		matches2, _ := SearchEmails(ctx, groupName, &pair[1])
-		for _, item := range matches2 {
-			if currentUIDs[item.ID] {
-				resultUIDs[item.ID] = true
+		var next []*response.UserEmailUIDData
+		for _, row := range list {
+			if ids[row.ID] {
+				next = append(next, row)
 			}
 		}
+		list = next
 	}
-
-	// Build result from original list preserving order
-	var result []*response.UserEmailUIDData
-	for _, item := range list {
-		if resultUIDs[item.ID] {
-			result = append(result, item)
-		}
-	}
-
-	return result
+	return list, nil
 }

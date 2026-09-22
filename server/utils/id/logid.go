@@ -7,32 +7,30 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
 var ip_instance string
+var ipOnce sync.Once
 
 func getLocalIP() string {
-	if ip_instance != "" {
-		return ip_instance
-	}
-
-	ip := "127.0.0.1"
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		ip_instance = ip
-		return ip
-	}
-	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				ip = ipnet.IP.String()
-				break
+	ipOnce.Do(func() {
+		ip_instance = "127.0.0.1"
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					ip_instance = ipnet.IP.String()
+					break
+				}
 			}
 		}
-	}
-	ip_instance = ip
-	return ip
+	})
+	return ip_instance
 }
 
 func GenLogID() string {

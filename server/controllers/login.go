@@ -12,9 +12,9 @@ import (
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/Jinnrry/pmail/utils/errors"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"github.com/Jinnrry/pmail/utils/password"
 	log "github.com/sirupsen/logrus"
-	"io"
 	"net/http"
 )
 
@@ -25,27 +25,27 @@ type loginRequest struct {
 
 func Login(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Errorf("%+v", err)
-	}
 	var reqData loginRequest
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
 
 	var user models.User
 
 	encodePwd := password.Encode(reqData.Password)
-	_, err = db.Instance.Where("account =? and password =? and disabled=0", reqData.Account, encodePwd).Get(&user)
+	_, err := db.Instance.Where("account =? and password =? and disabled=0", reqData.Account, encodePwd).Get(&user)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		log.Errorf("%+v", err)
 	}
 
 	if user.ID != 0 {
+		if err := session.Instance.RenewToken(req.Context()); err != nil {
+			response.NewErrorResponse(response.ServerError, "Unable to establish session", "").FPrint(w)
+			return
+		}
 		userStr, _ := json.Marshal(user)
 		session.Instance.Put(req.Context(), "user", string(userStr))
+		session.Instance.Put(req.Context(), "credential_version", session.CredentialVersion(user.Password))
 
 		domains := config.Instance.Domains
 		domains = array.Difference(domains, []string{config.Instance.Domain})
@@ -63,6 +63,9 @@ func Login(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 }
 
 func Logout(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	session.Instance.Clear(ctx.Context)
+	if err := session.Instance.Destroy(ctx.Context); err != nil {
+		response.NewErrorResponse(response.ServerError, "Unable to end session", "").FPrint(w)
+		return
+	}
 	response.NewSuccessResponse("Success").FPrint(w)
 }

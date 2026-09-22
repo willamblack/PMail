@@ -1,7 +1,6 @@
 package res_init
 
 import (
-	"encoding/json"
 	"os"
 	"time"
 
@@ -66,8 +65,8 @@ func Init(serverVersion string) {
 		// imap server start
 		go imap_server.StarTLS()
 
-		configStr, _ := json.Marshal(config.Instance)
-		log.Warnf("Config File Info:  %s", configStr)
+		// Never log DSNs, push credentials, or the complete runtime config.
+		log.Infof("Configuration loaded: database=%s domains=%d", config.Instance.DbType, len(config.Instance.Domains))
 
 		select {
 		case <-signal.RestartChan:
@@ -125,9 +124,10 @@ func waitHTTPReady() {
 		port = config.Instance.HttpPort
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/api/ping", port)
+	client := &http.Client{Timeout: time.Second}
 
 	for i := 0; i < 90; i++ {
-		resp, err := http.Get(url)
+		resp, err := client.Get(url)
 		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			log.Infof("HTTP ready: %s", url)

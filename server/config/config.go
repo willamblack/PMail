@@ -139,29 +139,36 @@ func Init() {
 	if len(args) >= 2 && args[len(args)-1] == "dev" {
 		cfgData, err = os.ReadFile(ROOT_PATH + "./config/config.dev.json")
 		if err != nil {
+			if !os.IsNotExist(err) {
+				panic(fmt.Errorf("read development config: %w", err))
+			}
 			return
 		}
 	} else {
 		cfgData, err = os.ReadFile(ROOT_PATH + "./config/config.json")
 		if err != nil {
 			log.Errorf("config file not found,%s", err.Error())
+			if !os.IsNotExist(err) {
+				panic(fmt.Errorf("read config: %w", err))
+			}
 			return
 		}
 	}
 
-	err = json.Unmarshal(cfgData, &Instance)
-	Instance.fixPath()
+	loaded, err := decodeConfig(cfgData)
 	if err != nil {
-		return
+		// An existing, invalid config must never reopen the unauthenticated
+		// setup wizard or partially overwrite the running configuration.
+		panic(fmt.Errorf("invalid PMail configuration: %w", err))
 	}
+	loaded.fixPath()
+	Instance = loaded
 
 	if len(Instance.Domains) == 0 && Instance.Domain != "" {
 		Instance.Domains = []string{Instance.Domain}
 	}
 
-	if Instance.Domain != "" && Instance.IsInit {
-		IsInit = true
-	}
+	IsInit = Instance.Domain != "" && Instance.IsInit
 
 	// 设置日志格式为json格式
 	log.SetFormatter(&logFormatter{})
@@ -194,34 +201,64 @@ func Init() {
 
 }
 
-func ReadPrivateKey() (*ecdsa.PrivateKey, bool) {
-	key, err := os.ReadFile(ROOT_PATH + "./config/ssl/account_private.pem")
+func decodeConfig(data []byte) (*Config, error) {
+	var cfg *Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration must be a JSON object")
+	}
+	return cfg, nil
+}
+
+func ReadPrivateKey() (*ecdsa.PrivateKey, bool, error) {
+	path := filepath.Join(ROOT_PATH, "config/ssl/account_private.pem")
+	key, err := os.ReadFile(path)
 	if err != nil {
-		return createNewPrivateKey(), true
+		if !os.IsNotExist(err) {
+			return nil, false, err
+		}
+		privateKey, err := createNewPrivateKey(path)
+		return privateKey, true, err
 	}
 
 	block, _ := pem.Decode(key)
-	x509Encoded := block.Bytes
-	privateKey, _ := x509.ParseECPrivateKey(x509Encoded)
-
-	return privateKey, false
+	if block == nil {
+		return nil, false, fmt.Errorf("ACME account key contains no PEM data")
+	}
+	privateKey, err := x509.ParseECPrivateKey(block.Bytes)
+	return privateKey, false, err
 }
 
-func createNewPrivateKey() *ecdsa.PrivateKey {
+func createNewPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	// Create a user. New accounts need an email and private key to start.
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	x509Encoded, _ := x509.MarshalECPrivateKey(privateKey)
+	x509Encoded, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return nil, err
+	}
 
 	// 将ec 密钥写入到 pem文件里
-	keypem, _ := os.OpenFile(ROOT_PATH+"./config/ssl/account_private.pem", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
-	err = pem.Encode(keypem, &pem.Block{Type: "EC PRIVATE KEY", Bytes: x509Encoded})
-	if err != nil {
-		panic(err)
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
 	}
-	return privateKey
+	keypem, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	encodeErr := pem.Encode(keypem, &pem.Block{Type: "EC PRIVATE KEY", Bytes: x509Encoded})
+	closeErr := keypem.Close()
+	if encodeErr != nil {
+		return nil, encodeErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return privateKey, nil
 }
 
 func WriteConfig(cfg *Config) error {
@@ -256,17 +293,21 @@ func ReadConfig() (*Config, error) {
 			return nil, errors.Wrap(err)
 		}
 
-		err = json.Unmarshal(cfgData, &configData)
-		configData.fixPath()
+		loaded, err := decodeConfig(cfgData)
 		if err != nil {
 			log.Errorf("Read Config Unmarshal Error:%s", err.Error())
 			return nil, errors.Wrap(err)
 		}
+		configData = *loaded
+		configData.fixPath()
 	}
 	return &configData, nil
 }
 
 func (c *Config) fixPath() {
+	if !filepath.IsAbs(c.DkimPrivateKeyPath) {
+		c.DkimPrivateKeyPath = ROOT_PATH + c.DkimPrivateKeyPath
+	}
 	if c.DbType == DBTypeSQLite && !strings.HasPrefix(c.DbDSN, "/") {
 		c.DbDSN = ROOT_PATH + c.DbDSN
 	}

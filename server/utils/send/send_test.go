@@ -1,12 +1,68 @@
 package send
 
 import (
+	stdcontext "context"
 	"errors"
 	"fmt"
+	"github.com/Jinnrry/pmail/dto/parsemail"
+	"github.com/Jinnrry/pmail/utils/context"
 	"net"
 	"net/textproto"
+	"sync/atomic"
 	"testing"
 )
+
+func TestTestDomainUsesOrdinaryDNSRouting(t *testing.T) {
+	oldResolver := net.DefaultResolver
+	t.Cleanup(func() { net.DefaultResolver = oldResolver })
+	var lookups atomic.Int32
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(stdcontext.Context, string, string) (net.Conn, error) {
+		lookups.Add(1)
+		return nil, errors.New("network disabled for DNS routing test")
+	}}
+	err, failures := doSend(&context.Context{}, "example.com", []byte("test body"), []*parsemail.User{{EmailAddress: "recipient@test.domain"}}, "sender@example.com")
+	if err == nil {
+		t.Fatal("blocked DNS unexpectedly delivered message")
+	}
+	if lookups.Load() == 0 {
+		t.Fatal("test.domain bypassed ordinary DNS routing")
+	}
+	if _, ok := failures["test.domain"]; !ok {
+		t.Fatalf("delivery reported a substituted domain: %v", failures)
+	}
+	if _, ok := failures["localhost"]; ok {
+		t.Fatalf("test domain was routed to localhost: %v", failures)
+	}
+}
+
+func TestDoSendRejectsEmptyOrInvalidRecipients(t *testing.T) {
+	for _, recipients := range [][]*parsemail.User{nil, {nil}, {{EmailAddress: "not-an-address"}}} {
+		if err, _ := doSend(&context.Context{}, "example.com", nil, recipients, "sender@example.com"); err == nil {
+			t.Fatalf("invalid recipients returned success: %+v", recipients)
+		}
+	}
+}
+
+func TestSMTPDeliveryUsesOnlyEnvelopeRecipients(t *testing.T) {
+	email := &parsemail.Email{
+		To:         []*parsemail.User{{EmailAddress: "header-only@example.net"}},
+		Cc:         []*parsemail.User{{EmailAddress: "header-cc@example.net"}},
+		Bcc:        []*parsemail.User{{EmailAddress: "bcc@example.net"}},
+		EnvelopeTo: []string{"envelope-only@example.net"},
+	}
+	got := deliveryRecipients(email)
+	if len(got) != 1 || got[0].EmailAddress != "envelope-only@example.net" {
+		t.Fatalf("SMTP recipients must not be expanded from headers: %+v", got)
+	}
+	email.EnvelopeTo = nil
+	if got = deliveryRecipients(email); len(got) != 3 {
+		t.Fatalf("web/API recipient behavior changed: %+v", got)
+	}
+	email.EnvelopeTo = []string{}
+	if got = deliveryRecipients(email); len(got) != 0 {
+		t.Fatalf("empty SMTP envelope expanded headers: %+v", got)
+	}
+}
 
 func TestIsPermanentSMTPResponse(t *testing.T) {
 	tests := []struct {

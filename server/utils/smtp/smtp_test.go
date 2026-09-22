@@ -36,6 +36,21 @@ func TestNewClientUsesConfiguredOutboundHostname(t *testing.T) {
 	}
 }
 
+func TestQuoteMailboxPreservesDecodedQuotedLocalParts(t *testing.T) {
+	for input, want := range map[string]string{
+		"a@b@example.com":   `"a@b"@example.com`,
+		"a,b@example.com":   `"a,b"@example.com`,
+		`"a,b"@example.com`: `"a,b"@example.com`,
+		"a b@example.com":   `"a b"@example.com`,
+		"plain@example.com": "plain@example.com",
+		"":                  "",
+	} {
+		if got := quoteMailbox(input); got != want {
+			t.Errorf("quoteMailbox(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestSendMailUnsafeUsesFinalDataResponseAsDeliveryResult(t *testing.T) {
 	tests := []struct {
 		name                 string

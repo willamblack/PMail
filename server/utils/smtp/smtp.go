@@ -27,6 +27,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/textproto"
 	"strings"
@@ -37,6 +38,7 @@ var NoSupportSTARTTLSError = errors.New("smtp: server doesn't support STARTTLS")
 var EOFError = errors.New("EOF")
 
 const outboundSMTPQuitWriteTimeout = 250 * time.Millisecond
+const outboundSMTPTimeout = 2 * time.Minute
 
 // A Client represents a client connection to an SMTP server.
 type Client struct {
@@ -71,27 +73,35 @@ func Dial(addr, fromDomain string) (*Client, error) {
 
 // with tls
 func DialTls(addr, domain, fromDomain string) (*Client, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
 	if domain == "" {
-		domain = fromDomain
+		domain = strings.TrimSuffix(host, ".")
 	}
 
 	// TLS config
 	tlsconfig := &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         domain,
+		ServerName: domain,
 	}
 
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 2 * time.Second}, "tcp", addr, tlsconfig)
 	if err != nil {
 		return nil, err
 	}
-	host, _, _ := net.SplitHostPort(addr)
 	return NewClient(conn, host, fromDomain)
 }
 
 // NewClient returns a new Client using an existing connection and host as a
 // server name to be used when authenticating.
 func NewClient(conn net.Conn, host, fromDomain string) (*Client, error) {
+	// DialTimeout bounds only TCP connection establishment. Also bound the
+	// greeting and complete SMTP transaction, including a stalled remote DATA.
+	if err := conn.SetDeadline(time.Now().Add(outboundSMTPTimeout)); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	text := textproto.NewConn(conn)
 	_, _, err := text.ReadResponse(220)
 	if err != nil {
@@ -206,7 +216,7 @@ func (c *Client) StartTLS(config *tls.Config) error {
 	if config.ServerName == "" {
 		// Make a copy to avoid polluting argument
 		config = config.Clone()
-		config.ServerName = c.serverName
+		config.ServerName = strings.TrimSuffix(c.serverName, ".")
 	}
 	c.conn = tls.Client(c.conn, config)
 	c.Text = textproto.NewConn(c.conn)
@@ -295,6 +305,7 @@ func (c *Client) Mail(from string) error {
 	if err := validateLine(from); err != nil {
 		return err
 	}
+	from = quoteMailbox(from)
 	if err := c.hello(); err != nil {
 		return err
 	}
@@ -318,6 +329,7 @@ func (c *Client) Rcpt(to string) error {
 	if err := validateLine(to); err != nil {
 		return err
 	}
+	to = quoteMailbox(to)
 	_, _, err := c.cmd(25, "RCPT TO:<%s>", to)
 	return err
 }
@@ -579,4 +591,18 @@ func validateLine(line string) error {
 		return errors.New("smtp: A line must not contain CR or LF")
 	}
 	return nil
+}
+
+// go-smtp and net/mail expose decoded local-parts. Restore SMTP quoting when
+// serializing them, including legal commas, spaces and @ inside a local-part.
+func quoteMailbox(address string) string {
+	if address == "" {
+		return ""
+	} // null reverse-path
+	if strings.HasPrefix(address, `"`) {
+		if parsed, err := mail.ParseAddress(address); err == nil {
+			address = parsed.Address
+		}
+	}
+	return strings.TrimSuffix(strings.TrimPrefix((&mail.Address{Address: address}).String(), "<"), ">")
 }

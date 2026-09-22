@@ -15,6 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -154,23 +155,34 @@ func renewCertificate(privateKey *ecdsa.PrivateKey, cfg *config.Config) error {
 	log.Infof("wait ssl renew")
 	certificates, err := client.Certificate.Obtain(request)
 	if err != nil {
-		panic(err)
+		return errors.Wrap(err)
 	}
-	err = os.WriteFile("./config/ssl/private.key", certificates.PrivateKey, 0666)
-	if err != nil {
-		panic(err)
-	}
+	return saveCertificate(cfg, certificates)
+}
 
-	err = os.WriteFile("./config/ssl/public.crt", certificates.Certificate, 0666)
-	if err != nil {
-		panic(err)
+func saveCertificate(cfg *config.Config, cert *certificate.Resource) error {
+	if _, err := tls.X509KeyPair(cert.Certificate, cert.PrivateKey); err != nil {
+		return errors.Wrap(err)
 	}
-
-	err = os.WriteFile("./config/ssl/issuerCert.crt", certificates.IssuerCertificate, 0666)
-	if err != nil {
-		panic(err)
+	for _, item := range []struct {
+		path string
+		data []byte
+		mode os.FileMode
+	}{
+		{cfg.SSLPrivateKeyPath, cert.PrivateKey, 0600},
+		{cfg.SSLPublicKeyPath, cert.Certificate, 0644},
+		{filepath.Join(filepath.Dir(cfg.SSLPublicKeyPath), "issuerCert.crt"), cert.IssuerCertificate, 0644},
+	} {
+		if err := os.MkdirAll(filepath.Dir(item.path), 0700); err != nil {
+			return errors.Wrap(err)
+		}
+		if err := os.WriteFile(item.path, item.data, item.mode); err != nil {
+			return errors.Wrap(err)
+		}
+		if err := os.Chmod(item.path, item.mode); err != nil {
+			return errors.Wrap(err)
+		}
 	}
-
 	return nil
 }
 
@@ -230,25 +242,18 @@ func generateCertificate(privateKey *ecdsa.PrivateKey, cfg *config.Config, newAc
 		log.Infof("wait ssl")
 		certificates, err := client.Certificate.Obtain(request)
 		if err != nil {
-			panic(err)
+			log.Errorf("SSL certificate generation failed: %v", err)
+			return
 		}
 		log.Infof("证书校验通过！")
-		err = os.WriteFile("./config/ssl/private.key", certificates.PrivateKey, 0666)
-		if err != nil {
-			panic(err)
+		if err = saveCertificate(cfg, certificates); err != nil {
+			log.Errorf("SSL certificate save failed: %v", err)
+			return
 		}
 
-		err = os.WriteFile("./config/ssl/public.crt", certificates.Certificate, 0666)
-		if err != nil {
-			panic(err)
+		if err = setup.Finish(); err != nil {
+			log.Errorf("SSL setup finish failed: %v", err)
 		}
-
-		err = os.WriteFile("./config/ssl/issuerCert.crt", certificates.IssuerCertificate, 0666)
-		if err != nil {
-			panic(err)
-		}
-
-		setup.Finish()
 
 	}, nil)
 
@@ -259,7 +264,7 @@ func GenSSL(update bool) error {
 
 	cfg, err := config.ReadConfig()
 	if err != nil {
-		panic(err)
+		return errors.Wrap(err)
 	}
 
 	if !update {
@@ -271,7 +276,10 @@ func GenSSL(update bool) error {
 		}
 	}
 
-	privateKey, newAccount := config.ReadPrivateKey()
+	privateKey, newAccount, err := config.ReadPrivateKey()
+	if err != nil {
+		return errors.Wrap(err)
+	}
 
 	if !update {
 		return generateCertificate(privateKey, cfg, newAccount)
@@ -285,7 +293,7 @@ func CheckSSLCrtInfo() (int, time.Time, bool, error) {
 
 	cfg, err := config.ReadConfig()
 	if err != nil {
-		panic(err)
+		return -1, time.Time{}, true, errors.Wrap(err)
 	}
 	// load cert and key by tls.LoadX509KeyPair
 	tlsCert, err := tls.LoadX509KeyPair(cfg.SSLPublicKeyPath, cfg.SSLPrivateKeyPath)
@@ -332,6 +340,7 @@ func Update(needRestart bool) {
 			err = GenSSL(true)
 			if err != nil {
 				log.Errorf("SSL Update Error! %+v", err)
+				return
 			}
 			if needRestart {
 				// 更新完证书，重启服务

@@ -36,6 +36,9 @@ func GetAttachments(ctx *context.Context, emailId int, cid string) (string, []by
 }
 
 func GetAttachmentsByIndex(ctx *context.Context, emailId int, index int) (string, []byte) {
+	if emailId <= 0 || index < 0 {
+		return "", nil
+	}
 
 	// 获取邮件内容
 	var email models.Email

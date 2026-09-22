@@ -1,9 +1,11 @@
 package email
 
 import (
+	stdcontext "context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/dto/parsemail"
@@ -14,12 +16,14 @@ import (
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/async"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/send"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
-	"io"
+	"mime"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 )
@@ -33,7 +37,7 @@ type sendRequest struct {
 	Subject     string       `json:"subject"`
 	Text        string       `json:"text"`   // Plaintext message (optional)
 	HTML        string       `json:"html"`   // Html message (optional)
-	Sender      user         `json:"sender"` // override From as SMTP envelope sender (optional)
+	Sender      user         `json:"sender"` // RFC Sender header metadata; does not override SMTP envelope From
 	ReadReceipt []string     `json:"read_receipt"`
 	Attachments []attachment `json:"attrs"`
 }
@@ -49,38 +53,17 @@ type attachment struct {
 }
 
 func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-		response.NewErrorResponse(response.ParamsError, "params error", err.Error()).FPrint(w)
-		return
-	}
-	log.WithContext(ctx).Infof("发送邮件")
-
 	var reqData sendRequest
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-		response.NewErrorResponse(response.ParamsError, "params error", err.Error()).FPrint(w)
+	if !httputil.ReadJSON(w, req, &reqData) {
 		return
-	}
-
-	if reqData.From.Email != "" {
-		account, domain, parseErr := maildomain.SplitAddress(reqData.From.Email)
-		_, domainAllowed := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains)
-		if parseErr != nil || !domainAllowed {
-			response.NewErrorResponse(response.ParamsError, "params error", "").FPrint(w)
-			return
-		}
-		if !ctx.IsAdmin && !strings.EqualFold(account, ctx.UserAccount) {
-			response.NewErrorResponse(response.ParamsError, "params error", "").FPrint(w)
-			return
-		}
-
 	}
 
 	if reqData.From.Email == "" {
 		reqData.From.Email = ctx.UserAccount + "@" + config.Instance.Domain
+	}
+	if err := validateSendRequest(ctx, &reqData); err != nil {
+		response.NewErrorResponse(response.ParamsError, err.Error(), "").FPrint(w)
+		return
 	}
 
 	if reqData.From.Email == "" {
@@ -97,12 +80,16 @@ func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if len(reqData.To) <= 0 {
+	if len(reqData.To)+len(reqData.Cc)+len(reqData.Bcc) == 0 {
 		response.NewErrorResponse(response.ParamsError, "收件人必填", "收件人必填").FPrint(w)
 		return
 	}
 
 	e := &parsemail.Email{}
+	for _, reply := range reqData.ReplyTo {
+		e.ReplyTo = append(e.ReplyTo, &parsemail.User{Name: reply.Name, EmailAddress: reply.Email})
+	}
+	e.ReadReceipt = reqData.ReadReceipt
 
 	for _, to := range reqData.To {
 		e.To = append(e.To, &parsemail.User{
@@ -145,11 +132,7 @@ func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	e.HTML = []byte(reqData.HTML)
 	e.Subject = reqData.Subject
 	for _, att := range reqData.Attachments {
-		att.Data = strings.TrimPrefix(att.Data, "data:")
-		infos := strings.Split(att.Data, ";")
-		contentType := infos[0]
-		content := strings.TrimPrefix(infos[1], "base64,")
-		decoded, err := base64.StdEncoding.DecodeString(content)
+		contentType, decoded, err := decodeAttachment(att.Data)
 		if err != nil {
 			log.WithContext(ctx).Errorf("附件解码错误！%v", err)
 			response.NewErrorResponse(response.ParamsError, i18n.GetText(ctx.Lang, "att_err"), err.Error()).FPrint(w)
@@ -195,16 +178,21 @@ func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		MsgID:        parsemail.GenerateMsgID(config.Instance.Domain),
 	}
 
-	_, err = db.Instance.Insert(&modelEmail)
+	_, err := db.Instance.Insert(&modelEmail)
 
 	if err != nil || modelEmail.Id <= 0 {
-		log.Println("insert error:", err.Error())
-		response.NewErrorResponse(response.ServerError, i18n.GetText(ctx.Lang, "send_fail"), err.Error()).FPrint(w)
+		log.WithContext(ctx).Errorf("insert email failed: %v", err)
+		response.NewErrorResponse(response.ServerError, i18n.GetText(ctx.Lang, "send_fail"), "").FPrint(w)
 		return
 	}
 
 	e.MessageId = cast.ToInt64(modelEmail.Id)
 	e.MsgID = modelEmail.MsgID
+	// Delivery outlives the HTTP response. Preserve identity/logging values but
+	// do not inherit cancellation when net/http finishes the request.
+	backgroundCtx := *ctx
+	backgroundCtx.Context = stdcontext.WithoutCancel(ctx.Context)
+	ctx = &backgroundCtx
 
 	async.New(ctx).Process(func(p any) {
 		errMsg := ""
@@ -262,4 +250,77 @@ func Send(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 func json2string(d any) string {
 	by, _ := json.Marshal(d)
 	return string(by)
+}
+
+func validateSendRequest(ctx *context.Context, req *sendRequest) error {
+	validateAddress := func(value *user, owned bool) error {
+		if strings.ContainsAny(value.Name+value.Email, "\r\n\x00") {
+			return fmt.Errorf("Invalid email header")
+		}
+		parsed, err := mail.ParseAddress(value.Email)
+		if err != nil || parsed.Name != "" {
+			return fmt.Errorf("Invalid email address")
+		}
+		account, domain, err := maildomain.SplitAddress(parsed.Address)
+		if err != nil {
+			return fmt.Errorf("Invalid email address")
+		}
+		if owned {
+			_, allowed := maildomain.MatchRoot(domain, config.Instance.Domains, config.Instance.AcceptSubdomains)
+			if !allowed || (!ctx.IsAdmin && !strings.EqualFold(account, ctx.UserAccount)) {
+				return fmt.Errorf("Sender address not permitted")
+			}
+		}
+		// Store the validated, normalized mailbox rather than the original
+		// display-name/angle-bracket input; quote special local-parts correctly.
+		canonical := (&mail.Address{Address: account + "@" + domain}).String()
+		value.Email = strings.TrimSuffix(strings.TrimPrefix(canonical, "<"), ">")
+		return nil
+	}
+	if err := validateAddress(&req.From, true); err != nil {
+		return err
+	}
+	if req.Sender.Email != "" {
+		if err := validateAddress(&req.Sender, true); err != nil {
+			return err
+		}
+	}
+	for _, addresses := range [][]user{req.To, req.Cc, req.Bcc, req.ReplyTo} {
+		for i := range addresses {
+			if err := validateAddress(&addresses[i], false); err != nil {
+				return err
+			}
+		}
+	}
+	for i, address := range req.ReadReceipt {
+		value := user{Email: address}
+		if err := validateAddress(&value, false); err != nil {
+			return err
+		}
+		req.ReadReceipt[i] = value.Email
+	}
+	if strings.ContainsAny(req.Subject, "\r\n\x00") {
+		return fmt.Errorf("Invalid subject header")
+	}
+	for _, att := range req.Attachments {
+		if strings.ContainsAny(att.Name, "\r\n\x00") {
+			return fmt.Errorf("Invalid attachment name")
+		}
+	}
+	return nil
+}
+
+func decodeAttachment(data string) (string, []byte, error) {
+	if !strings.HasPrefix(data, "data:") {
+		return "", nil, fmt.Errorf("Expected a base64 data URL")
+	}
+	mediaType, content, ok := strings.Cut(strings.TrimPrefix(data, "data:"), ";base64,")
+	if !ok || strings.ContainsAny(mediaType, "\r\n\x00") {
+		return "", nil, fmt.Errorf("Invalid attachment data URL")
+	}
+	if _, _, err := mime.ParseMediaType(mediaType); err != nil {
+		return "", nil, fmt.Errorf("Invalid attachment media type")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(content)
+	return mediaType, decoded, err
 }

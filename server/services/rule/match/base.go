@@ -18,6 +18,9 @@ type Match interface {
 func buildUsers(users []*parsemail.User) string {
 	ret := ""
 	for i, u := range users {
+		if u == nil {
+			continue
+		}
 		if i != 0 {
 			ret += ","
 		}
@@ -27,11 +30,16 @@ func buildUsers(users []*parsemail.User) string {
 }
 
 func getFieldContent(field string, email *parsemail.Email) string {
+	if email == nil {
+		return ""
+	}
 	switch field {
 	case "ReplyTo":
 		return buildUsers(email.ReplyTo)
 	case "From":
-		return email.From.EmailAddress
+		if email.From != nil {
+			return email.From.EmailAddress
+		}
 	case "Subject":
 		return email.Subject
 	case "To":
@@ -45,7 +53,9 @@ func getFieldContent(field string, email *parsemail.Email) string {
 	case "Html":
 		return string(email.HTML)
 	case "Sender":
-		return email.Sender.EmailAddress
+		if email.Sender != nil {
+			return email.Sender.EmailAddress
+		}
 	case "Content":
 		b := string(email.HTML)
 		b2 := string(email.Text)

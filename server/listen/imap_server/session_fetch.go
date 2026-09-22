@@ -11,7 +11,7 @@ import (
 	"github.com/Jinnrry/pmail/dto/parsemail"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/services/detail"
-	"github.com/Jinnrry/pmail/services/list"
+	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -111,27 +111,7 @@ func buildEnvelope(email *response.EmailResponseData, traEmail *parsemail.Email)
 }
 
 func (s *serverSession) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) error {
-	switch numSet.(type) {
-	case imap.SeqSet:
-		seqSet := numSet.(imap.SeqSet)
-		for _, seq := range seqSet {
-			emailList := list.GetEmailListByGroup(s.ctx, s.currentMailbox, list.ImapListReq{
-				Star: cast.ToInt(seq.Start),
-				End:  cast.ToInt(seq.Stop),
-			}, false)
-			write(s.ctx, w, emailList, options)
-		}
-
-	case imap.UIDSet:
-		uidSet := numSet.(imap.UIDSet)
-		for _, uid := range uidSet {
-			emailList := list.GetEmailListByGroup(s.ctx, s.currentMailbox, list.ImapListReq{
-				Star: cast.ToInt(uint32(uid.Start)),
-				End:  cast.ToInt(uint32(uid.Stop)),
-			}, true)
-			write(s.ctx, w, emailList, options)
-		}
-	}
+	write(s.ctx, w, s.messages(numSet), options, s.deleteUidList, s.readOnly)
 	return nil
 }
 
@@ -223,7 +203,7 @@ func bsMixedWithAttachments(alt *imap.BodyStructureMultiPart, extend bool, atts 
 	}
 }
 
-func write(ctx *context.Context, w *imapserver.FetchWriter, emailList []*response.EmailResponseData, options *imap.FetchOptions) {
+func write(ctx *context.Context, w *imapserver.FetchWriter, emailList []*response.EmailResponseData, options *imap.FetchOptions, deletedUIDs []int, readOnly bool) {
 	for _, email := range emailList {
 		writer := w.CreateMessage(cast.ToUint32(email.SerialNumber))
 
@@ -261,17 +241,20 @@ func write(ctx *context.Context, w *imapserver.FetchWriter, emailList []*respons
 			writer.WriteRFC822Size(cast.ToInt64(len(emailContent)))
 		}
 		if options.Flags {
+			flags := []imap.Flag{}
 			if email.IsRead == 1 {
-				writer.WriteFlags([]imap.Flag{imap.FlagSeen})
-			} else {
-				writer.WriteFlags([]imap.Flag{})
+				flags = append(flags, imap.FlagSeen)
 			}
+			if array.InArray(email.UeId, deletedUIDs) {
+				flags = append(flags, imap.FlagDeleted)
+			}
+			writer.WriteFlags(flags)
 		}
 		if options.InternalDate {
 			writer.WriteInternalDate(email.CreateTime)
 		}
 		for _, section := range options.BodySection {
-			if !section.Peek {
+			if !section.Peek && !readOnly {
 				detail.MakeRead(ctx, email.Id, true)
 			}
 			emailContent := traEmail.BuildBytes(ctx, false)

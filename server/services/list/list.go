@@ -12,7 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"strings"
 )
-import . "xorm.io/builder"
 
 func GetEmailList(ctx *context.Context, tagInfo dto.SearchTag, keyword string, pop3List bool, offset, limit int) (emailList []*response.EmailResponseData, total int64) {
 	return getList(ctx, tagInfo, keyword, "all", pop3List, offset, limit)
@@ -104,8 +103,14 @@ func genSQL(ctx *context.Context, count bool, tagInfo dto.SearchTag, keyword, se
 	// A count query has exactly one result row. Applying page OFFSET to it
 	// drops that row on page 2 and makes the client hide pagination entirely.
 	if !count {
-		if limit == 0 {
+		if limit <= 0 {
 			limit = 10
+		}
+		if offset < 0 {
+			offset = 0
+		}
+		if !pop3List && limit > 200 {
+			limit = 200
 		}
 		sql += " order by e.id desc"
 		if limit < 10000 {
@@ -130,9 +135,11 @@ func appendKeywordSearch(sql string, sqlParams []any, keyword, searchField strin
 	}
 
 	conditions := make([]string, 0, len(columns))
+	// '_' and '%' are legal mailbox characters, not search wildcards.
+	keyword = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(keyword)
 	pattern := "%" + keyword + "%"
 	for _, column := range columns {
-		conditions = append(conditions, "e."+quoteColumn(column)+" like ?")
+		conditions = append(conditions, "e."+quoteColumn(column)+" like ? escape '!'")
 		sqlParams = append(sqlParams, pattern)
 	}
 	return sql + " and (" + strings.Join(conditions, " or ") + ")", sqlParams
@@ -160,177 +167,109 @@ type ImapListReq struct {
 	End     int
 }
 
-func GetUEListByUID(ctx *context.Context, groupName string, star, end int, uidList []int) []*response.UserEmailUIDData {
-	var ue []*response.UserEmailUIDData
-	sql := "SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE user_id = ? "
-
-	params := []any{ctx.UserID}
-
-	if len(uidList) > 0 {
-		sql += fmt.Sprintf(" and id in (%s)", array.Join(uidList, ","))
-	}
-	if star > 0 {
-		sql += " and id >=?"
-		params = append(params, star)
-	}
-	if end > 0 {
-		sql += " and id <=?"
-		params = append(params, end)
-	}
-
-	switch groupName {
-	case "INBOX":
-		sql += " and status =?"
-		params = append(params, 0)
-	case "Sent Messages":
-		sql += " and status =?"
-		params = append(params, 1)
-	case "Drafts":
-		sql += " and status =?"
-		params = append(params, 4)
-	case "Deleted Messages":
-		sql += " and status =?"
-		params = append(params, 3)
-	case "Junk":
-		sql += " and status =?"
-		params = append(params, 5)
-	default:
-		groupNames := strings.Split(groupName, "/")
-		groupName = groupNames[len(groupNames)-1]
-
-		var group models.Group
-		db.Instance.Table("group").Where("user_id=? and name=?", ctx.UserID, groupName).Get(&group)
-		if group.ID == 0 {
+func GetUEListByUID(ctx *context.Context, groupName string, start, end int, uidList []int) []*response.UserEmailUIDData {
+	var rows []*response.UserEmailUIDData
+	query := db.Instance.Table("user_email").Where("user_id=?", ctx.UserID)
+	if code, ok := models.GroupNameToCode[groupName]; ok {
+		status := map[int]int{models.INBOX: 0, models.Sent: 1, models.Drafts: 4, models.Deleted: 3, models.Junk: 5}[code]
+		query = query.And("status=? and group_id=0", status)
+	} else {
+		var mailbox models.Group
+		found, err := db.Instance.Where("user_id=? and full_path=?", ctx.UserID, groupName).Get(&mailbox)
+		if err != nil || !found {
 			return nil
 		}
-
-		sql += " and group_id = ?"
-		params = append(params, group.ID)
+		query = query.And("group_id=?", mailbox.ID)
 	}
-
-	db.Instance.SQL(sql, params...).Find(&ue)
-	return ue
-}
-
-func getEmailListByUidList(ctx *context.Context, groupName string, req ImapListReq, uid bool) []*response.EmailResponseData {
-	var ret []*response.EmailResponseData
-	var ue []*response.UserEmailUIDData
-	sql := fmt.Sprintf("SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and id in (%s) and status = ?)", array.Join(req.UidList, ","))
-	if req.Star > 0 && req.End != 0 {
-		sql = fmt.Sprintf("SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and id >=%d and id <= %d and status = ?)", req.Star, req.End)
+	if err := query.Select("*").OrderBy("id").Find(&rows); err != nil {
+		log.WithContext(ctx).Errorf("IMAP mailbox query: %v", err)
+		return nil
 	}
-	if req.Star > 0 && req.End == 0 {
-		sql = fmt.Sprintf("SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and id >=%d and status = ?)", req.Star)
-	}
-
-	var err error
-	switch groupName {
-	case "INBOX":
-		err = db.Instance.SQL(sql, ctx.UserID, 0).Find(&ue)
-	case "Sent Messages":
-		err = db.Instance.SQL(sql, ctx.UserID, 1).Find(&ue)
-	case "Drafts":
-		err = db.Instance.SQL(sql, ctx.UserID, 4).Find(&ue)
-	case "Deleted Messages":
-		err = db.Instance.SQL(sql, ctx.UserID, 3).Find(&ue)
-	case "Junk":
-		err = db.Instance.SQL(sql, ctx.UserID, 5).Find(&ue)
-	default:
-		groupNames := strings.Split(groupName, "/")
-		groupName = groupNames[len(groupNames)-1]
-
-		var group models.Group
-		db.Instance.Table("group").Where("user_id=? and name=?", ctx.UserID, groupName).Get(&group)
-		if group.ID == 0 {
-			return ret
+	var result []*response.UserEmailUIDData
+	for index, row := range rows {
+		// Sequence numbers belong to the complete selected mailbox, not the
+		// subset selected by UID or search criteria.
+		row.SerialNumber = index + 1
+		if start > 0 && row.ID < start || end > 0 && row.ID > end {
+			continue
 		}
-		err = db.Instance.
-			SQL(fmt.Sprintf(
-				"SELECT * from (SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and group_id = ?)) a WHERE serial_number in (%s)",
-				array.Join(req.UidList, ","))).
-			Find(&ue, ctx.UserID, group.ID)
+		if len(uidList) > 0 && !array.InArray(row.ID, uidList) {
+			continue
+		}
+		result = append(result, row)
 	}
-
-	if err != nil {
-		log.WithContext(ctx).Errorf("SQL ERROR: %s ,Error:%s", sql, err)
-	}
-	ueMap := map[int]*response.UserEmailUIDData{}
-	var emailIds []int
-	for _, email := range ue {
-		ueMap[email.EmailID] = email
-		emailIds = append(emailIds, email.EmailID)
-	}
-
-	_ = db.Instance.Table("email").Select("*").Where(Eq{"id": emailIds}).Find(&ret)
-	for i, data := range ret {
-		ret[i].IsRead = ueMap[data.Id].IsRead
-		ret[i].SerialNumber = ueMap[data.Id].SerialNumber
-		ret[i].UeId = ueMap[data.Id].ID
-	}
-
-	return ret
+	return result
 }
 
 func GetEmailListByGroup(ctx *context.Context, groupName string, req ImapListReq, uid bool) []*response.EmailResponseData {
-	if len(req.UidList) == 0 && req.Star == 0 && req.End == 0 {
+	rows := GetUEListByUID(ctx, groupName, 0, 0, nil)
+	if len(rows) == 0 {
 		return nil
 	}
-
+	maximum := len(rows)
 	if uid {
-		return getEmailListByUidList(ctx, groupName, req, uid)
+		maximum = rows[len(rows)-1].ID
 	}
-
-	var ret []*response.EmailResponseData
-	var ue []*response.UserEmailUIDData
-
-	sql := fmt.Sprintf("SELECT * from (SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and status = ? and group_id=0 )) a WHERE serial_number in (%s)", array.Join(req.UidList, ","))
-	if req.Star > 0 && req.End == 0 {
-		sql = fmt.Sprintf("SELECT * from (SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and status = ? and group_id=0 )) a WHERE serial_number >= %d", req.Star)
+	start, end := req.Star, req.End
+	// IMAP represents "*" as zero and permits reversed ranges, including *:1.
+	if start == 0 {
+		start = maximum
 	}
-	if req.Star > 0 && req.End > 0 {
-		sql = fmt.Sprintf("SELECT * from (SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and status = ? and group_id=0 )) a WHERE serial_number >= %d and serial_number <=%d", req.Star, req.End)
+	if end == 0 {
+		end = maximum
 	}
-
-	switch groupName {
-	case "INBOX":
-		db.Instance.SQL(sql, ctx.UserID, 0).Find(&ue)
-	case "Sent Messages":
-		db.Instance.SQL(sql, ctx.UserID, 1).Find(&ue)
-	case "Drafts":
-		db.Instance.SQL(sql, ctx.UserID, 4).Find(&ue)
-	case "Deleted Messages":
-		db.Instance.SQL(sql, ctx.UserID, 3).Find(&ue)
-	case "Junk":
-		db.Instance.SQL(sql, ctx.UserID, 5).Find(&ue)
-	default:
-		groupNames := strings.Split(groupName, "/")
-		groupName = groupNames[len(groupNames)-1]
-
-		var group models.Group
-		db.Instance.Table("group").Where("user_id=? and name=?", ctx.UserID, groupName).Get(&group)
-		if group.ID == 0 {
-			return ret
+	if start > end {
+		start, end = end, start
+	}
+	var selected []*response.UserEmailUIDData
+	for _, row := range rows {
+		number := row.SerialNumber
+		if uid {
+			number = row.ID
 		}
-		db.Instance.
-			SQL(fmt.Sprintf(
-				"SELECT * from (SELECT id,email_id, is_read, ROW_NUMBER() OVER (ORDER BY id) AS serial_number FROM `user_email` WHERE (user_id = ? and group_id = ?)) a WHERE serial_number in (%s)",
-				array.Join(req.UidList, ","))).
-			Find(&ue, ctx.UserID, group.ID)
+		matches := number >= start && number <= end
+		if len(req.UidList) > 0 {
+			matches = array.InArray(number, req.UidList)
+		}
+		if matches {
+			selected = append(selected, row)
+		}
 	}
+	return GetEmailsForUIDRows(ctx, selected)
+}
 
-	ueMap := map[int]*response.UserEmailUIDData{}
-	var emailIds []int
-	for _, email := range ue {
-		ueMap[email.EmailID] = email
-		emailIds = append(emailIds, email.EmailID)
+// GetEmailsForUIDRows materializes only previously authorized mailbox rows.
+func GetEmailsForUIDRows(ctx *context.Context, selected []*response.UserEmailUIDData) []*response.EmailResponseData {
+	var emailIDs []int
+	for _, row := range selected {
+		if row.UserID == ctx.UserID {
+			emailIDs = append(emailIDs, row.EmailID)
+		}
 	}
-
-	_ = db.Instance.Table("email").Select("*").Where(Eq{"id": emailIds}).Find(&ret)
-	for i, data := range ret {
-		ret[i].IsRead = ueMap[data.Id].IsRead
-		ret[i].SerialNumber = ueMap[data.Id].SerialNumber
-		ret[i].UeId = ueMap[data.Id].ID
+	if len(emailIDs) == 0 {
+		return nil
 	}
-
-	return ret
+	var emails []models.Email
+	if err := db.Instance.In("id", emailIDs).Find(&emails); err != nil {
+		log.WithContext(ctx).Errorf("IMAP message query: %v", err)
+		return nil
+	}
+	byID := make(map[int]models.Email, len(emails))
+	for _, email := range emails {
+		byID[email.Id] = email
+	}
+	var result []*response.EmailResponseData
+	for _, row := range selected {
+		if row.UserID != ctx.UserID {
+			continue
+		}
+		email, ok := byID[row.EmailID]
+		if !ok {
+			continue
+		}
+		result = append(result, &response.EmailResponseData{
+			Email: email, IsRead: row.IsRead, UeId: row.ID, SerialNumber: row.SerialNumber,
+		})
+	}
+	return result
 }

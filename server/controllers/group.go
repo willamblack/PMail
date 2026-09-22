@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/dto"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/i18n"
@@ -9,16 +8,15 @@ import (
 	"github.com/Jinnrry/pmail/services/group"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
-	log "github.com/sirupsen/logrus"
-	"io"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"net/http"
 )
 
 func GetUserGroupList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	defaultGroup := []*models.Group{
-		{models.INBOX, i18n.GetText(ctx.Lang, "inbox"), 0, 0, "/"},     // 收件箱
-		{models.Junk, i18n.GetText(ctx.Lang, "junk"), 0, 0, "/"},       //垃圾邮件
-		{models.Deleted, i18n.GetText(ctx.Lang, "deleted"), 0, 0, "/"}, //已删除
+		{ID: models.INBOX, Name: i18n.GetText(ctx.Lang, "inbox"), FullPath: "/"},
+		{ID: models.Junk, Name: i18n.GetText(ctx.Lang, "junk"), FullPath: "/"},
+		{ID: models.Deleted, Name: i18n.GetText(ctx.Lang, "deleted"), FullPath: "/"},
 	}
 
 	infos := group.GetGroupList(ctx)
@@ -63,13 +61,8 @@ type addGroupRequest struct {
 
 func AddGroup(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	var reqData *addGroupRequest
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-	}
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
 
 	newGroup, err := group.CreateGroup(ctx, reqData.Name, reqData.ParentId)
@@ -88,13 +81,8 @@ type delGroupRequest struct {
 
 func DelGroup(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 	var reqData *delGroupRequest
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
-	}
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.WithContext(ctx).Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
 	succ, err := group.DelGroup(ctx, reqData.Id)
 

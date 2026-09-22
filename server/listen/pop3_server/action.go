@@ -33,7 +33,7 @@ func (a action) Custom(session *gopop.Session, cmd string, args []string) ([]str
 		session.Ctx = tc
 	}
 
-	log.WithContext(session.Ctx).Debugf("not supported cmd request! cmd:%s args:%v", cmd, args)
+	log.WithContext(session.Ctx).Debugf("not supported POP3 command: %s", cmd)
 	return nil, errors2.New("not supported cmd request")
 }
 
@@ -55,7 +55,6 @@ func (a action) Capa(session *gopop.Session) ([]string, error) {
 		"USER",
 		"PASS",
 		"TOP",
-		"APOP",
 		"STAT",
 		"UIDL",
 		"LIST",
@@ -65,9 +64,8 @@ func (a action) Capa(session *gopop.Session) ([]string, error) {
 		"NOOP",
 		"QUIT",
 	}
-	if !session.InTls {
-		ret = append(ret, "STLS")
-	}
+	// The current gopop dependency cannot correctly negotiate STLS. Use 995
+	// implicit TLS; do not advertise a non-working authentication upgrade.
 
 	log.WithContext(session.Ctx).Debugf("CAPA \n %+v", ret)
 
@@ -76,6 +74,9 @@ func (a action) Capa(session *gopop.Session) ([]string, error) {
 
 // User 提交登陆的用户名
 func (a action) User(session *gopop.Session, username string) error {
+	if session.Status == gopop.TRANSACTION {
+		return errors2.New("already authenticated")
+	}
 	if session.Ctx == nil {
 		tc := &context.Context{}
 		tc.SetValue(context.LogID, id.GenLogID())
@@ -96,13 +97,19 @@ func (a action) User(session *gopop.Session, username string) error {
 
 // Pass 提交密码验证
 func (a action) Pass(session *gopop.Session, pwd string) error {
+	if session.Status == gopop.TRANSACTION {
+		return errors2.New("already authenticated")
+	}
+	if !session.InTls {
+		return errors2.New("TLS required; connect to port 995")
+	}
 	if session.Ctx == nil {
 		tc := &context.Context{}
 		tc.SetValue(context.LogID, id.GenLogID())
 		session.Ctx = tc
 	}
 
-	log.WithContext(session.Ctx).Debugf("POP3 PASS %s , User:%s", pwd, session.User)
+	log.WithContext(session.Ctx).Debug("POP3 authentication attempt")
 
 	var user models.User
 
@@ -128,40 +135,8 @@ func (a action) Pass(session *gopop.Session, pwd string) error {
 
 // Apop APOP登陆命令
 func (a action) Apop(session *gopop.Session, username, digest string) error {
-	if session.Ctx == nil {
-		tc := &context.Context{}
-		tc.SetValue(context.LogID, id.GenLogID())
-		session.Ctx = tc
-	}
-	log.WithContext(session.Ctx).Debugf("POP3 CMD: APOP, Args:%s,%s", username, digest)
-
-	infos := strings.Split(username, "@")
-	if len(infos) > 1 {
-		username = infos[0]
-	}
-
-	log.WithContext(session.Ctx).Debugf("POP3 APOP %s %s", username, digest)
-
-	var user models.User
-
-	_, err := db.Instance.Where("account =? and disabled = 0", username).Get(&user)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		log.WithContext(session.Ctx.(*context.Context)).Errorf("%+v", err)
-	}
-
-	if user.ID > 0 && digest == password.Md5Encode(user.Password) {
-		session.User = username
-		session.Status = gopop.TRANSACTION
-
-		session.Ctx.(*context.Context).UserID = user.ID
-		session.Ctx.(*context.Context).UserName = user.Name
-		session.Ctx.(*context.Context).UserAccount = user.Account
-
-		return nil
-	}
-
-	return errors2.New("password error")
-
+	// Stored one-way password hashes cannot implement challenge-based APOP.
+	return errors2.New("APOP is not supported; use USER/PASS over TLS")
 }
 
 // Stat 查询邮件数量
@@ -274,7 +249,6 @@ func (a action) Retr(session *gopop.Session, id int64) (string, int64, error) {
 	}
 
 	ret := parsemail.NewEmailFromModel(email.Email).BuildBytes(session.Ctx.(*context.Context), false)
-	log.WithContext(session.Ctx).Debugf("Retr \n %+v", string(ret))
 	return string(ret), cast.ToInt64(len(ret)), nil
 
 }
@@ -295,6 +269,9 @@ func (a action) Rest(session *gopop.Session) error {
 }
 
 func (a action) Top(session *gopop.Session, id int64, n int) (string, error) {
+	if n < 0 {
+		return "", errors2.New("line count must not be negative")
+	}
 	log.WithContext(session.Ctx).Debugf("POP3 CMD: TOP %d %d", id, n)
 	email, err := detail.GetEmailDetail(session.Ctx.(*context.Context), cast.ToInt(id), false)
 	if err != nil {
@@ -311,12 +288,11 @@ func (a action) Top(session *gopop.Session, id int64, n int) (string, error) {
 			break
 		}
 	}
-	if len(res) <= headerEndLine+n+1 {
+	if n >= len(res)-headerEndLine-1 {
 		return string(ret), nil
 	}
 
 	lines := array.Join(res[0:headerEndLine+n+1], "\n")
-	log.WithContext(session.Ctx).Debugf("Top \n %+v", lines)
 	return lines, nil
 
 }

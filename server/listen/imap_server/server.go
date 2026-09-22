@@ -39,6 +39,7 @@ type serverSession struct {
 	currentMailbox string
 	connectTime    time.Time
 	deleteUidList  []int
+	readOnly       bool
 }
 
 // NewSession creates a new IMAP session.
@@ -67,10 +68,12 @@ func (s *serverSession) Unsubscribe(mailbox string) error {
 
 func (s *serverSession) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
 	log.WithContext(s.ctx).Errorf("Append Not Implemented")
-	return nil, nil
+	return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "APPEND is not supported"}
 }
 
 func (s *serverSession) Unselect() error {
 	s.currentMailbox = ""
+	s.deleteUidList = nil
+	s.readOnly = false
 	return nil
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/emersion/go-message/charset"
 	"mime"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,12 +24,11 @@ var clientLogin *imapclient.Client
 var imapTestAddr string
 
 func TestMain(m *testing.M) {
-	wd, err := os.Getwd()
+	root, err := os.MkdirTemp("", "pmail-imap-tests-")
 	if err != nil {
 		panic(err)
 	}
-	config.ROOT_PATH = filepath.Clean(filepath.Join(wd, "../..")) + string(os.PathSeparator)
-	config.Init()
+	configureIMAPTests(root)
 	if err := db.Init(""); err != nil {
 		panic(err)
 	}
@@ -77,6 +75,7 @@ func TestMain(m *testing.M) {
 	clientUnLogin.Close()
 	clientLogin.Close()
 	Stop()
+	os.RemoveAll(root)
 	os.Exit(code)
 }
 
@@ -400,14 +399,22 @@ func TestExpunge(t *testing.T) {
 
 	clientLogin.Select("INBOX", &imap.SelectOptions{}).Wait()
 
-	res, err := clientLogin.UIDExpunge(imap.UIDSetNum(1, 2)).Collect()
+	rows, err := clientLogin.Fetch(imap.SeqSetNum(1), &imap.FetchOptions{UID: true}).Collect()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("fetch: %v %+v", err, rows)
+	}
+	uid := rows[0].UID
+	if _, err = clientLogin.Store(imap.UIDSetNum(uid), &imap.StoreFlags{Op: imap.StoreFlagsAdd, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Collect(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := clientLogin.UIDExpunge(imap.UIDSetNum(uid)).Collect()
 
 	if err != nil {
 		t.Errorf("%+v", err)
 	}
 	t.Logf("%+v", res)
 	var ues []models.UserEmail
-	db.Instance.Table("user_email").Where("id=1 or id=2").Find(&ues)
+	db.Instance.Table("user_email").Where("id=?", uid).Find(&ues)
 	if len(ues) > 0 {
 		t.Errorf("TestExpunge Error")
 	}

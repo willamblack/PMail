@@ -4,19 +4,15 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/models"
-	"github.com/Jinnrry/pmail/signal"
-	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/spf13/cast"
 	"io"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"os"
 	"strconv"
 	"strings"
@@ -31,93 +27,89 @@ const TestPort = 17888
 var TestHost string = "http://127.0.0.1:" + cast.ToString(TestPort)
 
 func TestMain(m *testing.M) {
-	cookeieJar, err := cookiejar.New(nil)
-	if err != nil {
-		panic(err)
+	if os.Getenv("PMAIL_INTEGRATION_TEST") != "1" {
+		os.Exit(m.Run())
 	}
-
-	httpClient = &http.Client{Jar: cookeieJar, Timeout: 5 * time.Minute}
-	os.Remove("config/config.json")
-	os.Remove("config/pmail_temp.db")
-	os.Setenv("setup_port", cast.ToString(TestPort))
-
-	go func() {
-		main()
-	}()
-	time.Sleep(5 * time.Second)
-
-	m.Run()
-
-	signal.StopChan <- true
-	time.Sleep(3 * time.Second)
+	if os.Getenv("PMAIL_INTEGRATION_WORKER") != "1" {
+		os.Exit(runIntegrationSupervisor())
+	}
+	os.Exit(runIntegrationWorker(m))
 }
 
 func TestMaster(t *testing.T) {
-	t.Run("TestPort", testPort)
-	t.Run("testDataBaseSet", testDataBaseSet)
-	t.Run("testPwdSet", testPwdSet)
-	t.Run("testDomainSet", testDomainSet)
-	t.Run("testDNSSet", testDNSSet)
+	if os.Getenv("PMAIL_INTEGRATION_TEST") != "1" {
+		t.Skip("legacy full-server integration: set PMAIL_INTEGRATION_TEST=1 in an isolated environment")
+	}
+	run := func(name string, test func(*testing.T)) {
+		if !t.Run(name, test) {
+			t.FailNow()
+		}
+	}
+	run("TestPort", testPort)
+	run("testDataBaseSet", testDataBaseSet)
+	run("testPwdSet", testPwdSet)
+	run("testDomainSet", testDomainSet)
+	run("testDNSSet", testDNSSet)
 	cfg, err := config.ReadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.HttpsEnabled = 2
 	cfg.HttpPort = TestPort
-	cfg.LogLevel = "debug"
+	cfg.LogLevel = "info"
 	err = config.WriteConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Run("testSSLSet", testSSLSet)
+	run("testSSLSet", testSSLSet)
 	t.Logf("Stop 8 Second for wating restart")
 	time.Sleep(8 * time.Second)
-	t.Run("testLogin", testLogin)           // 登录管理员账号
-	t.Run("testCreateUser", testCreateUser) // 创建3个测试用户
-	t.Run("testEditUser", testEditUser)     // 编辑user2，封禁user3
-	t.Run("testSendEmail", testSendEmail)
+	run("testLogin", testLogin)           // 登录管理员账号
+	run("testCreateUser", testCreateUser) // 创建3个测试用户
+	run("testEditUser", testEditUser)     // 编辑user2，封禁user3
+	run("testSendEmail", testSendEmail)
 	t.Logf("Stop 8 Second for wating sending")
 	time.Sleep(8 * time.Second)
-	t.Run("testEmailList", testEmailList)
-	t.Run("testGetDetail", testGetEmailDetail)
-	t.Run("testDelEmail", testDelEmail)
+	run("testEmailList", testEmailList)
+	run("testGetDetail", testGetEmailDetail)
+	run("testDelEmail", testDelEmail)
 
-	t.Run("testSendEmail2User1", testSendEmail2User1)
-	t.Run("testSendEmail2User12", testSendEmail2User12)
-	t.Run("testSendEmail2User2", testSendEmail2User2)
-	t.Run("testSendEmail2User3", testSendEmail2User3)
+	run("testSendEmail2User1", testSendEmail2User1)
+	run("testSendEmail2User12", testSendEmail2User12)
+	run("testSendEmail2User2", testSendEmail2User2)
+	run("testSendEmail2User3", testSendEmail2User3)
 	time.Sleep(8 * time.Second)
 
-	t.Run("testLoginUser3", testLoginUser3) // 测试登录被封禁账号
+	run("testLoginUser3", testLoginUser3) // 测试登录被封禁账号
 
-	t.Run("testLoginUser2", testLoginUser2) // 测试登录普通账号
+	run("testLoginUser2", testLoginUser2) // 测试登录普通账号
 
-	t.Run("testUser2EmailList", testUser2EmailList)
+	run("testUser2EmailList", testUser2EmailList)
 
-	t.Run("testUser2DelEmail", testUser2DelEmail) // 删除2个人共同拥有的邮件
+	run("testUser2DelEmail", testUser2DelEmail) // 删除2个人共同拥有的邮件
 
 	// 创建group
-	t.Run("testCreateGroup", testCreateGroup)
+	run("testCreateGroup", testCreateGroup)
 
 	// 创建rule
-	t.Run("testCreateRule", testCreateRule)
+	run("testCreateRule", testCreateRule)
 
 	// 再次发邮件
-	t.Run("testMoverEmailSend", testSendEmail2User2ForMove)
+	run("testMoverEmailSend", testSendEmail2User2ForMove)
 	time.Sleep(4 * time.Second)
 
-	t.Run("testMoverEmailSend", testSendEmail2User2ForSpam)
+	run("testMoverEmailSend", testSendEmail2User2ForSpam)
 	time.Sleep(3 * time.Second)
 
 	// 生成10封测试邮件
-	t.Run("genTestEmailData", genTestEmailData)
+	run("genTestEmailData", genTestEmailData)
 	time.Sleep(3 * time.Second)
 
 	// 检查规则执行
-	t.Run("testCheckRule", testCheckRule)
+	run("testCheckRule", testCheckRule)
 	time.Sleep(3 * time.Second)
 
-	t.Run("testTokenLogin", testTokenLogin)
+	run("testTokenLogin", testTokenLogin)
 }
 
 func md5Encode(str string) string {
@@ -372,21 +364,9 @@ func testDataBaseSet(t *testing.T) {
 		return
 	}
 
-	argList := flag.Args()
-
-	configData := `
-{"action":"set","step":"database","db_type":"sqlite","db_dsn":"./config/pmail_temp.db"}
-`
-
-	if array.InArray("mysql", argList) {
-		configData = `
-{"action":"set","step":"database","db_type":"mysql","db_dsn":"root:githubTest@tcp(mysql:3306)/pmail?parseTime=True"}
-`
-	} else if array.InArray("postgres", argList) {
-		configData = `
-{"action":"set","step":"database","db_type":"postgres","db_dsn":"postgres://postgres:githubTest@postgres:5432/pmail?sslmode=disable"}
-`
-	}
+	// The fixture's working directory is a disposable private root. Never
+	// connect these old end-to-end tests to a hard-coded shared database.
+	configData := `{"action":"set","step":"database","db_type":"sqlite","db_dsn":"./config/pmail_temp.db"}`
 
 	// 设置配置
 	ret, err = http.Post(TestHost+"/api/setup", "application/json", strings.NewReader(configData))
@@ -1069,6 +1049,9 @@ func portCheck(port int) bool {
 }
 
 func readResponse(r io.Reader) (*response.Response, error) {
+	if closer, ok := r.(io.Closer); ok {
+		defer closer.Close()
+	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err

@@ -1,8 +1,6 @@
 package send
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"github.com/Jinnrry/pmail/config"
@@ -10,13 +8,12 @@ import (
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/async"
-	"github.com/Jinnrry/pmail/utils/consts"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/maildomain"
 	"github.com/Jinnrry/pmail/utils/smtp"
 	log "github.com/sirupsen/logrus"
 	"net"
 	"net/textproto"
-	"strings"
 	"sync"
 )
 
@@ -51,7 +48,7 @@ func Forward(ctx *context.Context, e *parsemail.Email, forwardAddress string, us
 
 	b := e.ForwardBuildBytes(ctx, user, forwardAddress)
 
-	log.WithContext(ctx).Debugf("%s", b)
+	log.WithContext(ctx).Debugf("Forward message email_id=%d bytes=%d", e.MessageId, len(b))
 
 	from := user.Account + "@" + config.Instance.Domains[0]
 	return forwardData(ctx, config.Instance.Domains[0], b, forwardAddress, from)
@@ -76,18 +73,44 @@ func forwardData(ctx *context.Context, fromDomain string, data []byte, forwardAd
 
 func Send(ctx *context.Context, e *parsemail.Email) (error, map[string]error) {
 
-	_, fromDomain := e.From.GetDomainAccount()
+	_, fromDomain, err := maildomain.SplitAddress(e.From.EmailAddress)
+	if err != nil {
+		return err, nil
+	}
 
 	b := e.BuildBytes(ctx, true)
 
-	var to []*parsemail.User
-	to = append(append(append(to, e.To...), e.Cc...), e.Bcc...)
+	to := deliveryRecipients(e)
 
 	return doSend(ctx, fromDomain, b, to, e.From.EmailAddress)
 
 }
 
+func deliveryRecipients(e *parsemail.Email) []*parsemail.User {
+	if e.EnvelopeTo != nil {
+		to := make([]*parsemail.User, 0, len(e.EnvelopeTo))
+		for _, address := range e.EnvelopeTo {
+			to = append(to, &parsemail.User{EmailAddress: address})
+		}
+		return to
+	}
+	var to []*parsemail.User
+	return append(append(append(to, e.To...), e.Cc...), e.Bcc...)
+}
+
 func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemail.User, from string) (error, map[string]error) {
+	if len(to) == 0 {
+		return errors.New("no delivery recipients"), nil
+	}
+	// Validate the entire recipient list before delivering to any domain.
+	for _, recipient := range to {
+		if recipient == nil {
+			return errors.New("invalid delivery recipient"), nil
+		}
+		if _, _, err := maildomain.SplitAddress(recipient.EmailAddress); err != nil {
+			return errors.New("invalid delivery recipient"), nil
+		}
+	}
 
 	// 按域名整理
 	toByDomain := map[mxDomain][]*parsemail.User{}
@@ -95,46 +118,32 @@ func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemai
 	// mxFailoverMap 保存每个域名的完整 MX 列表（按优先级排序），用于故障转移
 	mxFailoverMap := map[string][]string{}
 	for _, s := range to {
-		args := strings.Split(s.EmailAddress, "@")
-		if len(args) == 2 {
-			if args[1] == consts.TEST_DOMAIN {
-				// 测试使用
-				address := mxDomain{
-					domain: "localhost",
-					mxHost: "127.0.0.1",
-				}
-				toByDomain[address] = append(toByDomain[address], s)
-			} else {
-				//查询dns mx记录
-				mxInfo, lookupErr := net.LookupMX(args[1])
-				address := mxDomain{
-					domain: "smtp." + args[1],
-					mxHost: "smtp." + args[1],
-				}
-				if lookupErr != nil {
-					log.WithContext(ctx).Errorf("%s 域名mx记录查询失败，检查邮箱是否存在！", s.EmailAddress)
-				}
-				if len(mxInfo) > 0 {
-					address = mxDomain{
-						domain: args[1],
-						mxHost: mxInfo[0].Host,
-					}
-					// 保存全部 MX 主机（net.LookupMX 已按优先级排序）
-					allHosts := make([]string, 0, len(mxInfo))
-					for _, mx := range mxInfo {
-						allHosts = append(allHosts, mx.Host)
-					}
-					mxFailoverMap[args[1]] = allHosts
-				}
-				if lookupErr != nil {
-					mxLookupErrors[address] = lookupErr
-				}
-				toByDomain[address] = append(toByDomain[address], s)
-			}
-		} else {
-			log.WithContext(ctx).Errorf("邮箱地址解析错误！ %s", s)
-			continue
+		_, recipientDomain, _ := maildomain.SplitAddress(s.EmailAddress)
+		// All recipient domains use normal DNS routing, including test names.
+		mxInfo, lookupErr := net.LookupMX(recipientDomain)
+		address := mxDomain{
+			domain: recipientDomain,
+			mxHost: recipientDomain,
 		}
+		if lookupErr != nil {
+			log.WithContext(ctx).Errorf("%s 域名mx记录查询失败，检查邮箱是否存在！", s.EmailAddress)
+		}
+		if len(mxInfo) > 0 {
+			address = mxDomain{
+				domain: recipientDomain,
+				mxHost: mxInfo[0].Host,
+			}
+			// 保存全部 MX 主机（net.LookupMX 已按优先级排序）
+			allHosts := make([]string, 0, len(mxInfo))
+			for _, mx := range mxInfo {
+				allHosts = append(allHosts, mx.Host)
+			}
+			mxFailoverMap[recipientDomain] = allHosts
+		}
+		if lookupErr != nil {
+			mxLookupErrors[address] = lookupErr
+		}
+		toByDomain[address] = append(toByDomain[address], s)
 	}
 
 	var errEmailAddress []string
@@ -159,14 +168,6 @@ func doSend(ctx *context.Context, fromDomain string, data []byte, to []*parsemai
 				errEmailAddressMu.Unlock()
 
 				errMap.Store(domain.domain, err)
-			}
-
-			if domain.domain == "localhost" {
-				err := smtp.SendMailUnsafe("", domain.mxHost+":25", nil, from, fromDomain, buildAddress(tos), data)
-				if err != nil {
-					recordFailure(err)
-				}
-				return
 			}
 
 			// 获取该域名的全部 MX 主机（按优先级排序），用于故障转移
@@ -227,20 +228,6 @@ func isPermanentSMTPResponse(err error) bool {
 func tryDeliverToMX(ctx *context.Context, mxHost, domain, from, fromDomain string, to []string, data []byte) error {
 	// 优先尝试25端口，starttls方式投递
 	err := smtp.SendMail("", mxHost+":25", nil, from, fromDomain, to, data)
-	if err == nil {
-		return nil
-	}
-	// 证书错误，从新选取证书发送
-	var certificateErr *tls.CertificateVerificationError
-	if errors.As(err, &certificateErr) {
-		var hostnameErr x509.HostnameError
-		if errors.As(certificateErr.Err, &hostnameErr) {
-			if hostnameErr.Certificate != nil {
-				certificateHostName := hostnameErr.Certificate.DNSNames
-				err = smtp.SendMail(domainMatch(domain, certificateHostName), mxHost+":25", nil, from, fromDomain, to, data)
-			}
-		}
-	}
 	if err == nil {
 		return nil
 	}
@@ -309,60 +296,4 @@ func buildAddress(u []*parsemail.User) []string {
 	}
 
 	return ret
-}
-
-func domainMatch(domain string, dnsNames []string) string {
-	if len(dnsNames) == 0 {
-		return domain
-	}
-
-	secondMatch := ""
-
-	for _, name := range dnsNames {
-		if strings.Contains(name, "smtp") {
-			secondMatch = name
-		}
-
-		if name == domain {
-			return name
-		}
-		if strings.Contains(name, "*") {
-			nameArg := strings.Split(name, ".")
-			domainArg := strings.Split(domain, ".")
-			match := true
-			for i := 0; i < len(nameArg); i++ {
-				if nameArg[len(nameArg)-1-i] == "*" {
-					continue
-				}
-				if len(domainArg) > i {
-					if nameArg[len(nameArg)-1-i] == domainArg[len(domainArg)-1-i] {
-						continue
-					}
-				}
-				match = false
-				break
-			}
-
-			for i := 0; i < len(domainArg); i++ {
-				if len(nameArg) > i && nameArg[len(nameArg)-1-i] == domainArg[len(domainArg)-1-i] {
-					continue
-				}
-				if len(nameArg) > i && nameArg[len(nameArg)-1-i] == "*" {
-					continue
-				}
-
-				match = false
-				break
-			}
-			if match {
-				return domain
-			}
-		}
-	}
-
-	if secondMatch != "" {
-		return strings.ReplaceAll(secondMatch, "*.", "")
-	}
-
-	return strings.ReplaceAll(dnsNames[0], "*.", "")
 }

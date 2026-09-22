@@ -10,10 +10,10 @@ import (
 	"github.com/Jinnrry/pmail/services/del_email"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
-	"github.com/Jinnrry/pmail/utils/errors"
 	log "github.com/sirupsen/logrus"
 	"strings"
 	"xorm.io/builder"
+	"xorm.io/xorm"
 )
 
 type GroupItem struct {
@@ -24,6 +24,18 @@ type GroupItem struct {
 }
 
 func CreateGroup(ctx *context.Context, name string, parentId int) (*models.Group, error) {
+	if parentId < 0 || strings.TrimSpace(name) == "" {
+		return nil, errors2.New("invalid group")
+	}
+	if parentId > 0 {
+		found, err := db.Instance.Where("id=? and user_id=?", parentId, ctx.UserID).Exist(&models.Group{})
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, errors2.New("parent group not found")
+		}
+	}
 	// 先查询是否存在
 	var group models.Group
 	db.Instance.Table("group").Where("name = ? and user_id = ?", name, ctx.UserID).Get(&group)
@@ -68,32 +80,38 @@ func GetGroupByFullPath(ctx *context.Context, fullPath string) (*models.Group, e
 }
 
 func DelGroup(ctx *context.Context, groupId int) (bool, error) {
-	allGroupIds := getAllChildId(ctx, groupId)
-	allGroupIds = append(allGroupIds, groupId)
-
-	// 开启一个事务
-	trans := db.Instance.NewSession()
-
-	res, err := trans.Exec(db.WithContext(ctx, fmt.Sprintf("delete from `group` where id in (%s) and user_id =?", array.Join(allGroupIds, ","))), ctx.UserID)
-	if err != nil {
-		trans.Rollback()
-		return false, errors.Wrap(err)
-	}
-	num, err := res.RowsAffected()
-	if err != nil {
-		trans.Rollback()
-		return false, errors.Wrap(err)
-	}
-
-	_, err = trans.Exec(db.WithContext(ctx, fmt.Sprintf("update user_email set group_id=0 where group_id in (%s)", array.Join(allGroupIds, ","))))
-	if err != nil {
-		trans.Rollback()
-		return false, errors.Wrap(err)
-	}
-
-	trans.Commit()
-
-	return num > 0, nil
+	deleted := false
+	err := db.Transaction(db.Instance, func(trans *xorm.Session) error {
+		deleted = false
+		found, err := trans.Where("id=? and user_id=?", groupId, ctx.UserID).Exist(&models.Group{})
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors2.New("group not found")
+		}
+		ids := []int{groupId}
+		seen := map[int]bool{groupId: true}
+		for i := 0; i < len(ids); i++ {
+			var children []models.Group
+			if err := trans.Where("parent_id=? and user_id=?", ids[i], ctx.UserID).Find(&children); err != nil {
+				return err
+			}
+			for _, child := range children {
+				if !seen[child.ID] {
+					ids = append(ids, child.ID)
+					seen[child.ID] = true
+				}
+			}
+		}
+		if _, err := trans.Table(&models.UserEmail{}).Where("user_id=?", ctx.UserID).In("group_id", ids).Update(map[string]interface{}{"group_id": 0}); err != nil {
+			return err
+		}
+		num, err := trans.Where("user_id=?", ctx.UserID).In("id", ids).Delete(&models.Group{})
+		deleted = num > 0
+		return err
+	})
+	return deleted && err == nil, err
 }
 
 type id struct {
@@ -121,6 +139,15 @@ func GetGroupInfoList(ctx *context.Context) []*GroupItem {
 
 // MoveMailToGroup 将某封邮件移动到某个分组中
 func MoveMailToGroup(ctx *context.Context, mailId []int, groupId int) bool {
+	if len(mailId) == 0 || groupId < 0 {
+		return false
+	}
+	if groupId > 0 {
+		found, err := db.Instance.Where("id=? and user_id=?", groupId, ctx.UserID).Exist(&models.Group{})
+		if err != nil || !found {
+			return false
+		}
+	}
 	res, err := db.Instance.Exec(db.WithContext(ctx,
 		fmt.Sprintf("update user_email set group_id=? where email_id in (%s) and user_id =?", array.Join(mailId, ","))),
 		groupId, ctx.UserID)
@@ -191,11 +218,8 @@ func GetGroupStatus(ctx *context.Context, groupName string, params []string) (st
 	retMap := map[string]int{}
 
 	if !IsDefaultBox(groupName) {
-		groupNames := strings.Split(groupName, "/")
-		groupName = groupNames[len(groupNames)-1]
-
 		var group models.Group
-		db.Instance.Table("group").Where("user_id=? and name=?", ctx.UserID, groupName).Get(&group)
+		db.Instance.Table("group").Where("user_id=? and full_path=?", ctx.UserID, groupName).Get(&group)
 		if group.ID == 0 {
 			ret := ""
 			for _, param := range params {
@@ -283,33 +307,33 @@ func getGroupNum(ctx *context.Context, groupName string, mustUnread bool) int {
 	switch groupName {
 	case "INBOX":
 		if mustUnread {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=0 and is_read=0", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=0 and is_read=0", ctx.UserID).Get(&count)
 		} else {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=0", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=0", ctx.UserID).Get(&count)
 		}
 	case "Sent Messages":
 		if mustUnread {
 			count = 0
 		} else {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=1", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=1", ctx.UserID).Get(&count)
 		}
 	case "Drafts":
 		if mustUnread {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=4 and is_read=0", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=4 and is_read=0", ctx.UserID).Get(&count)
 		} else {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=4", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=4", ctx.UserID).Get(&count)
 		}
 	case "Deleted Messages":
 		if mustUnread {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=3 and is_read=0", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=3 and is_read=0", ctx.UserID).Get(&count)
 		} else {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=3", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=3", ctx.UserID).Get(&count)
 		}
 	case "Junk":
 		if mustUnread {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=5 and is_read=0", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=5 and is_read=0", ctx.UserID).Get(&count)
 		} else {
-			db.Instance.Table("user_email").Select("count(1)").Where("user_id=? and status=5", ctx.UserID).Get(&count)
+			db.Instance.Table("user_email").Select("count(1)").Where("group_id=0 and user_id=? and status=5", ctx.UserID).Get(&count)
 		}
 	}
 	return count

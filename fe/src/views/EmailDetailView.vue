@@ -5,13 +5,14 @@
         <el-icon><Back /></el-icon>
       </el-button>
       <div class="action-buttons">
-        <el-button plain @click="handleDelete">
+        <el-button plain @click="handleDelete" :disabled="loading || Boolean(loadError) || !detailData.id">
           <el-icon><Delete /></el-icon>
         </el-button>
       </div>
     </div>
 
-    <div class="mail-detail-content">
+    <div class="mail-detail-content" v-loading="loading">
+      <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon/>
       <h1 class="mail-subject">{{ detailData.subject }}</h1>
       
       <div class="mail-meta-card">
@@ -52,10 +53,12 @@
       <el-divider class="custom-divider"/>
 
       <div class="mail-body">
-        <div class="body-text" v-if="detailData.html === ''">
+        <div class="body-text" v-if="!detailData.html">
           {{ detailData.text }}
         </div>
-        <div class="body-html" v-else v-html="detailData.html"></div>
+        <iframe v-else class="body-html" :title="lang.content"
+                :sandbox="mailBodySandbox" referrerpolicy="no-referrer"
+                :srcdoc="mailBodyDocument(detailData.html)"></iframe>
       </div>
 
       <div v-if="detailData.attachments && detailData.attachments.length > 0" class="attachments-section">
@@ -74,7 +77,7 @@
 </template>
 
 <script setup>
-import {ref} from 'vue'
+import {onUnmounted, ref, watch} from 'vue'
 import {useRoute, useRouter} from 'vue-router'
 import {Document, Back, Delete, Download} from '@element-plus/icons-vue';
 import {ElMessage, ElMessageBox} from 'element-plus';
@@ -82,6 +85,8 @@ import lang from '../i18n/i18n';
 import {http} from "@/utils/axios";
 import useGroupStore from '../stores/group';
 import {formatRecipient} from "@/utils/email";
+import {mailBodyDocument, mailBodySandbox} from "@/utils/mailBody";
+import {createRequestScope} from "@/utils/requestScope";
 
 const route = useRoute()
 const router = useRouter()
@@ -95,6 +100,9 @@ const ccs = ref([])
 const bccs = ref([])
 const showCC = ref(false)
 const showBCC = ref(false)
+const loading = ref(false)
+const loadError = ref("")
+const requests = createRequestScope()
 
 const parseRecipients = (value) => {
   if (!value) return []
@@ -106,16 +114,37 @@ const parseRecipients = (value) => {
   }
 }
 
-http.post("/api/email/detail", {id: parseInt(route.params.id)}).then(res => {
-  detailData.value = res.data || {}
-  detailData.value.attachments = res.data.attachments || [];
+watch(() => route.params.id, async (id) => {
+  const request = requests.start()
+  if (!request) return
+  loading.value = true
+  loadError.value = ""
+  detailData.value = {attachments: []}
+  tos.value = []
+  ccs.value = []
+  bccs.value = []
+  showCC.value = false
+  showBCC.value = false
+  try {
+    const res = await http.post("/api/email/detail", {id: Number(id)}, {signal: request.signal})
+    if (!request.isCurrent()) return
+    if (res.errorNo !== 0 || !res.data || typeof res.data !== "object") {
+      throw new Error(res.errorMsg || lang.load_failed)
+    }
+    detailData.value = {...res.data, attachments: res.data.attachments || []}
+    tos.value = parseRecipients(res.data.to)
+    ccs.value = parseRecipients(res.data.cc)
+    bccs.value = parseRecipients(res.data.bcc)
+    showCC.value = ccs.value.length > 0
+    showBCC.value = bccs.value.length > 0
+  } catch (error) {
+    if (request.isCurrent()) loadError.value = error.message || lang.load_failed
+  } finally {
+    if (request.isCurrent()) loading.value = false
+  }
+}, {immediate: true})
 
-  tos.value = parseRecipients(res.data.to)
-  ccs.value = parseRecipients(res.data.cc)
-  bccs.value = parseRecipients(res.data.bcc)
-  showCC.value = ccs.value && ccs.value.length > 0
-  showBCC.value = bccs.value && bccs.value.length > 0
-})
+onUnmounted(() => requests.dispose())
 
 const getInitial = (name) => {
   if (!name) return '?';
@@ -301,9 +330,15 @@ const handleDelete = () => {
   min-height: 200px;
 }
 
-.body-html :deep(img) {
-  max-width: 100%;
-  height: auto;
+.body-html {
+  display: block;
+  width: 100%;
+  height: 65vh;
+  height: 65dvh;
+  min-height: 280px;
+  border: 0;
+  border-radius: 8px;
+  background: white;
 }
 
 .body-text {

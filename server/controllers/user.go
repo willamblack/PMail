@@ -1,17 +1,16 @@
 package controllers
 
 import (
-	"encoding/json"
 	"github.com/Jinnrry/pmail/config"
 	"github.com/Jinnrry/pmail/db"
 	"github.com/Jinnrry/pmail/dto/response"
 	"github.com/Jinnrry/pmail/models"
 	"github.com/Jinnrry/pmail/utils/array"
 	"github.com/Jinnrry/pmail/utils/context"
+	"github.com/Jinnrry/pmail/utils/httputil"
 	"github.com/Jinnrry/pmail/utils/password"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
-	"io"
 	"math"
 	"net/http"
 )
@@ -31,14 +30,9 @@ func CreateUser(ctx *context.Context, w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Errorf("%+v", err)
-	}
 	var reqData userCreateRequest
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
 
 	if reqData.Username == "" || reqData.Password == "" || reqData.Account == "" {
@@ -51,7 +45,7 @@ func CreateUser(ctx *context.Context, w http.ResponseWriter, req *http.Request) 
 	user.Password = password.Encode(reqData.Password)
 	user.Account = reqData.Account
 
-	_, err = db.Instance.Insert(&user)
+	_, err := db.Instance.Insert(&user)
 	if err != nil {
 		response.NewErrorResponse(response.ServerError, err.Error(), "").FPrint(w)
 		return
@@ -71,24 +65,16 @@ func UserList(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Errorf("%+v", err)
-	}
 	var reqData userListRequest
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
-
-	offset := 0
-	if reqData.CurrentPage >= 1 {
-		offset = (reqData.CurrentPage - 1) * reqData.PageSize
+	page, limit, offset, ok := httputil.Pagination(reqData.CurrentPage, reqData.PageSize)
+	if !ok {
+		response.NewErrorResponse(response.ParamsError, "Invalid pagination", "").FPrint(w)
+		return
 	}
-
-	if reqData.PageSize == 0 {
-		reqData.PageSize = 15
-	}
+	reqData.CurrentPage, reqData.PageSize = page, limit
 
 	var users []models.User
 
@@ -126,14 +112,9 @@ func EditUser(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	reqBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Errorf("%+v", err)
-	}
 	var reqData userCreateRequest
-	err = json.Unmarshal(reqBytes, &reqData)
-	if err != nil {
-		log.Errorf("%+v", err)
+	if !httputil.ReadJSON(w, req, &reqData) {
+		return
 	}
 
 	if reqData.Id == 0 && reqData.Account == "" {
@@ -141,6 +122,7 @@ func EditUser(ctx *context.Context, w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var user models.User
+	var err error
 	if reqData.Id != 0 {
 		_, err = db.Instance.Where("id=?", reqData.Id).Get(&user)
 		if err != nil {

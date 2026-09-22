@@ -5,6 +5,10 @@ reference, see [docs/CONFIGURATION_CN.md](docs/CONFIGURATION_CN.md). A valid
 JSON template is provided as
 [config.admin-catchall.sqlite.example.json](config.admin-catchall.sqlite.example.json).
 
+For the source/security review, compatibility changes and remaining limitations,
+see [the audit report](docs/AUDIT_2026-09-21_CN.md). This review is not a production
+deployment certificate or a claim of complete IMAP/POP3 interoperability.
+
 This fork keeps PMail's existing user and mailbox model and adds a narrowly
 scoped mode for one administrator:
 
@@ -127,7 +131,7 @@ docker compose -f docker-compose.admin-catchall.yml up -d
 
 ```bash
 docker run -d --name pmail --restart unless-stopped \
-  -p 25:25 -p 80:80 -p 443:443 -p 110:110 \
+  -p 25:25 -p 80:80 -p 443:443 \
   -p 465:465 -p 587:587 -p 995:995 -p 993:993 \
   -v "$(pwd)/config:/work/config" \
   ghcr.io/YOUR-GITHUB-USER/YOUR-REPOSITORY:v2.9.7-admincatchall.1

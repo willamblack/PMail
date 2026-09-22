@@ -22,10 +22,17 @@ export default defineConfig({
     }
   },
   server: {
-    cors: true,
+    // Development proxies expose the local mailbox API. Do not share them on
+    // the LAN or grant arbitrary websites access to their responses.
+    host: '127.0.0.1',
+    cors: false,
     proxy: {
       "/api": "http://127.0.0.1/",
       "/attachments":"http://127.0.0.1/"
     }
+  },
+  preview: {
+    host: '127.0.0.1',
+    cors: false,
   }
 })
